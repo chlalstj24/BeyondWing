@@ -2,12 +2,13 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
-#include "GridTile.h"
+#include "BeyondWing/Core/Public/BWTypes.h"
 #include "Engine/DataTable.h"
 #include "DeckComponent.generated.h"
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnHandChanged, const TArray<FCardData>&, CurrentHand);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnHandChanged, const TArray<FBWCardData>&, CurrentHand);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnAPChanged, int32, CurrentAP, int32, MaxAP);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnMovePointsChanged, int32, NewPoints);
 
 UCLASS( ClassGroup=(Custom), meta=(BlueprintSpawnableComponent) )
 class BEYONDWING_API UDeckComponent : public UActorComponent
@@ -23,6 +24,9 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Combat|Resource")
 	FOnAPChanged OnAPChanged;
 
+	UPROPERTY(BlueprintAssignable, Category = "Combat|Resource")
+	FOnMovePointsChanged OnMovePointsChanged;
+
 protected:
 	virtual void BeginPlay() override;
 
@@ -36,16 +40,21 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Combat|Data|StartingDecks") TArray<FName> TECStartingDeck;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Combat|Data|StartingDecks") TArray<FName> HPStartingDeck;
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat|Deck") TArray<FCardData> Deck;
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat|Deck") TArray<FCardData> Hand;
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat|Deck") TArray<FCardData> Discard;
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat|Deck") TArray<FBWCardData> Deck;
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat|Deck") TArray<FBWCardData> Hand;
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat|Deck") TArray<FBWCardData> Discard;
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat|Resource") int32 CurrentAP;
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat|Resource") int32 MaxAP;
+	
+	// --- 이동 및 행동권 로직 ---
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat|Resource") bool bCanFreeMove;
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat|Resource") bool bCanFreeAttack; // [추가] 턴당 1회 무료 공격권
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat|Resource") int32 TurnCount;
 
-	FORCEINLINE const TArray<FCardData>& GetCurrentHand() const { return Hand; }
+	FORCEINLINE const TArray<FBWCardData>& GetCurrentHand() const { return Hand; }
 
 	UFUNCTION(BlueprintCallable, Category = "Combat|Deck") void LoadDeckByCharacterClass();
-	UFUNCTION(BlueprintCallable, Category = "Combat|Deck") void InitializeCombatDeck(const TArray<FCardData>& MasterDeck);
+	UFUNCTION(BlueprintCallable, Category = "Combat|Deck") void InitializeCombatDeck(const TArray<FBWCardData>& MasterDeck);
 	UFUNCTION(BlueprintCallable, Category = "Combat|Deck") void StartTurn();
 	UFUNCTION(BlueprintCallable, Category = "Combat|Deck") void EndTurn();
 
@@ -54,6 +63,6 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Combat|Deck") void ShuffleDiscardIntoDeck();
 	UFUNCTION(BlueprintCallable, Category = "Combat|Deck") void DrawCards(int32 Count);
-	UFUNCTION(BlueprintCallable, Category = "Combat|Action") bool UseCard(int32 HandIndex, FCardData& OutCardData);
+	UFUNCTION(BlueprintCallable, Category = "Combat|Action") bool UseCard(int32 HandIndex, FBWCardData& OutCardData);
 	UFUNCTION(BlueprintCallable, Category = "Combat|Action") bool DiscardCardForBasicAction(int32 HandIndex);
 };

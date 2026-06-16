@@ -2,7 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
-#include "GridTile.h"
+#include "BeyondWing/Core/Public/BWTypes.h"
 #include "BWHandWidget.generated.h"
 
 class UBWCardWidget;
@@ -20,7 +20,7 @@ public:
 	TSubclassOf<UBWCardWidget> CardWidgetClass;
 
 	UFUNCTION(BlueprintCallable, Category = "Hand")
-	void RefreshHand(const TArray<FCardData>& InHandCards);
+	void RefreshHand(const TArray<FBWCardData>& InHandCards);
 
 	UFUNCTION(BlueprintCallable, Category = "Hand")
 	void UpdateCardLayout();
@@ -39,7 +39,7 @@ public:
 	void OnCombatStart_Received();
 
 	UFUNCTION()
-	void HandleHandChanged(const TArray<FCardData>& CurrentHand);
+	void HandleHandChanged(const TArray<FBWCardData>& CurrentHand);
 
 	UPROPERTY(BlueprintReadWrite, Category = "Hand")
 	int32 SelectedCardIndex = -1;

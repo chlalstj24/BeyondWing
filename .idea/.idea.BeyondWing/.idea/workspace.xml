@@ -29,14 +29,18 @@
     <setting file="file://$PROJECT_DIR$/Source/BeyondWing/Core/Public/BWPlayerController.h" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/Source/BeyondWing/Grid/Private/GridManager.cpp" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/Source/BeyondWing/Grid/Private/GridTile.cpp" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/Source/BeyondWing/Grid/Public/GridManager.h" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/Source/BeyondWing/Grid/Public/GridTile.h" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/Source/BeyondWing/UI/Private/BWBattleHUDWidget.cpp" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/Source/BeyondWing/UI/Private/BWCardWidget.cpp" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/Source/BeyondWing/UI/Private/BWHandWidget.cpp" root0="SKIP_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/Source/BeyondWing/UI/Private/BWHandWidget.cpp" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/Source/BeyondWing/UI/Public/BWCardWidget.h" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/Source/BeyondWing/UI/Public/BWHandWidget.h" root0="SKIP_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/Source/BeyondWing/UI/Public/BWHandWidget.h" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://E:/UE_5.5/Engine/Source/Programs/AutomationTool/AutomationTool.csproj" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://E:/UE_5.5/Engine/Source/Runtime/Core/Private/Windows/WindowsPlatformFile.cpp" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://E:/UE_5.5/Engine/Source/Runtime/Engine/Classes/Engine/Texture2D.h" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://E:/UE_5.5/Engine/Source/Runtime/Engine/Classes/GameFramework/Actor.h" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://E:/UE_5.5/Engine/Source/Runtime/SlateCore/Public/Layout/Geometry.h" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://E:/UE_5.5/Engine/Source/Runtime/UMG/Private/Components/Widget.cpp" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://E:/UE_5.5/Engine/Source/Runtime/UMG/Public/Blueprint/UserWidget.h" root0="FORCE_HIGHLIGHTING" />
   </component>
@@ -226,6 +230,94 @@
       <workItem from="1780129316496" duration="925000" />
       <workItem from="1780136856522" duration="4734000" />
       <workItem from="1780148285556" duration="1579000" />
+      <workItem from="1780583319027" duration="2000" />
+      <workItem from="1781060334956" duration="416000" />
+      <workItem from="1781063425016" duration="173000" />
+      <workItem from="1781072143492" duration="287000" />
+      <workItem from="1781073910853" duration="375000" />
+      <workItem from="1781075410882" duration="167000" />
+      <workItem from="1781076725384" duration="66000" />
+      <workItem from="1781077820178" duration="287000" />
+      <workItem from="1781079847011" duration="75000" />
+      <workItem from="1781081292463" duration="1023000" />
+      <workItem from="1781088216214" duration="162000" />
+      <workItem from="1781090854702" duration="613000" />
+      <workItem from="1781092171028" duration="267000" />
+      <workItem from="1781097633892" duration="841000" />
+      <workItem from="1781108802372" duration="290000" />
+      <workItem from="1781109754907" duration="86000" />
+      <workItem from="1781138460413" duration="1375000" />
+      <workItem from="1781142234840" duration="122000" />
+      <workItem from="1781143323680" duration="864000" />
+      <workItem from="1781146287479" duration="376000" />
+      <workItem from="1781226685496" duration="283000" />
+      <workItem from="1781227104247" duration="68000" />
+      <workItem from="1781227422690" duration="135000" />
+      <workItem from="1781228690993" duration="463000" />
+      <workItem from="1781230214599" duration="949000" />
+      <workItem from="1781232390383" duration="225000" />
+      <workItem from="1781242368831" duration="2208000" />
+      <workItem from="1781250041424" duration="1561000" />
+      <workItem from="1781267392351" duration="88000" />
+      <workItem from="1781283189961" duration="1004000" />
+      <workItem from="1781330811725" duration="623000" />
+      <workItem from="1781337049083" duration="1227000" />
+      <workItem from="1781341923390" duration="439000" />
+      <workItem from="1781348162626" duration="817000" />
+      <workItem from="1781352696321" duration="301000" />
+      <workItem from="1781355609228" duration="227000" />
+      <workItem from="1781357753229" duration="998000" />
+      <workItem from="1781360050759" duration="72000" />
+      <workItem from="1781369431770" duration="763000" />
+      <workItem from="1781376624832" duration="130000" />
+      <workItem from="1781378057739" duration="152000" />
+      <workItem from="1781378862547" duration="246000" />
+      <workItem from="1781379398240" duration="132000" />
+      <workItem from="1781380045698" duration="266000" />
+      <workItem from="1781381409735" duration="610000" />
+      <workItem from="1781382675874" duration="384000" />
+      <workItem from="1781383130823" duration="1003000" />
+      <workItem from="1781384867943" duration="81000" />
+      <workItem from="1781416171490" duration="835000" />
+      <workItem from="1781486160772" duration="151000" />
+      <workItem from="1781487002543" duration="179000" />
+      <workItem from="1781487880181" duration="50000" />
+      <workItem from="1781488481362" duration="47000" />
+      <workItem from="1781489482654" duration="88000" />
+      <workItem from="1781490703046" duration="77000" />
+      <workItem from="1781491213543" duration="260000" />
+      <workItem from="1781492071808" duration="61000" />
+      <workItem from="1781492261630" duration="83000" />
+      <workItem from="1781493432159" duration="407000" />
+      <workItem from="1781494882422" duration="38000" />
+      <workItem from="1781495891804" duration="613000" />
+      <workItem from="1781500308148" duration="44000" />
+      <workItem from="1781500823697" duration="91000" />
+      <workItem from="1781506896743" duration="722000" />
+      <workItem from="1781509372535" duration="130000" />
+      <workItem from="1781517114704" duration="572000" />
+      <workItem from="1781518899475" duration="62000" />
+      <workItem from="1781519673935" duration="460000" />
+      <workItem from="1781521685621" duration="61000" />
+      <workItem from="1781522060870" duration="758000" />
+      <workItem from="1781523400105" duration="715000" />
+      <workItem from="1781527194367" duration="1039000" />
+      <workItem from="1781531096984" duration="125000" />
+      <workItem from="1781532077400" duration="179000" />
+      <workItem from="1781536108628" duration="123000" />
+      <workItem from="1781537186590" duration="493000" />
+      <workItem from="1781569750174" duration="827000" />
+      <workItem from="1781573892421" duration="398000" />
+      <workItem from="1781576518247" duration="771000" />
+      <workItem from="1781589465506" duration="1290000" />
+      <workItem from="1781593894140" duration="1776000" />
+      <workItem from="1781598927596" duration="1253000" />
+      <workItem from="1781606101013" duration="1968000" />
+      <workItem from="1781609388825" duration="584000" />
+      <workItem from="1781616402715" duration="84000" />
+      <workItem from="1781617230227" duration="445000" />
+      <workItem from="1781618514052" duration="988000" />
+      <workItem from="1781626449194" duration="425000" />
     </task>
     <servers />
   </component>

@@ -2,7 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
-#include "GridTile.h"
+#include "BeyondWing/Core/Public/BWTypes.h"
 #include "BWCardWidget.generated.h"
 
 UCLASS()
@@ -12,7 +12,7 @@ class BEYONDWING_API UBWCardWidget : public UUserWidget
 
 public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Card", meta = (ExposeOnSpawn = "true"))
-	FCardData CardData;
+	FBWCardData CardData;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Card", meta = (ExposeOnSpawn = "true"))
 	int32 HandIndex;

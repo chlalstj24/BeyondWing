@@ -1,18 +1,21 @@
 #include "DeckComponent.h"
 #include "BWCharacter.h"
+#include "Kismet/GameplayStatics.h"
 
 UDeckComponent::UDeckComponent()
 {
 	PrimaryComponentTick.bCanEverTick = false;
 	CurrentAP = 0;
 	MaxAP = 0;
+	TurnCount = 0;
 }
 
 void UDeckComponent::BeginPlay()
 {
 	Super::BeginPlay();
+	TurnCount = 0;
 	
-	// [정정] 기획 요청 사양: AP 자원은 3으로 시작하며 최대 10까지 증가 가능
+	// 기획 요청 사양: AP 자원은 3으로 시작하며 최대 10까지 증가 가능
 	MaxAP = 3;
 	CurrentAP = MaxAP;
 
@@ -48,7 +51,7 @@ void UDeckComponent::LoadDeckByCharacterClass()
 
 	for (const FName& CardName : *TargetSourceList)
 	{
-		FCardData* FoundCard = CardDataTable->FindRow<FCardData>(CardName, TEXT("DeckLoadContext"));
+		FBWCardData* FoundCard = CardDataTable->FindRow<FBWCardData>(CardName, TEXT("DeckLoadContext"));
 		if (FoundCard)
 		{
 			Deck.Add(*FoundCard);
@@ -70,7 +73,7 @@ void UDeckComponent::LoadDeckByCharacterClass()
 	}
 }
 
-void UDeckComponent::InitializeCombatDeck(const TArray<FCardData>& MasterDeck)
+void UDeckComponent::InitializeCombatDeck(const TArray<FBWCardData>& MasterDeck)
 {
 	Deck = MasterDeck;
 	Hand.Empty();
@@ -89,24 +92,35 @@ void UDeckComponent::InitializeCombatDeck(const TArray<FCardData>& MasterDeck)
 
 void UDeckComponent::StartTurn()
 {
-	// 1. AP 회복 및 스케일링 (최대 10)
-	if (MaxAP < 10)
+	// 첫 턴에는 3으로 시작하고, 이후 턴부터 1씩 증가
+	TurnCount++;
+	
+	if (TurnCount > 1 && MaxAP < 10)
 	{
 		MaxAP++;
 	}
 	CurrentAP = MaxAP;
+	bCanFreeMove = true; // 턴 시작 시 이동권 회복
+	bCanFreeAttack = true; // [추가] 턴 시작 시 공격권 회복
+	
+	ABWCharacter* OwnerChar = Cast<ABWCharacter>(GetOwner());
+	if (OwnerChar)
+	{
+		OwnerChar->CurrentMovePoints = OwnerChar->BaseMovePoints;
+		OnMovePointsChanged.Broadcast(OwnerChar->CurrentMovePoints);
+	}
 
-	// 2. 남은 패 버리기 (슬레이 더 스파이어 규칙)
-	for (const FCardData& RemainingCard : Hand)
+	// 남은 패 버리기
+	for (const FBWCardData& RemainingCard : Hand)
 	{
 		Discard.Add(RemainingCard);
 	}
 	Hand.Empty();
 
-	// 3. 카드 드로우 (CardsToDrawPerTurn 사용)
+	// 카드 드로우
 	DrawCards(CardsToDrawPerTurn);
 
-	// [핵심] 턴 시작 후 최종 패 상태를 UI에 즉시 보고
+	// 턴 시작 후 최종 패 상태를 UI에 즉시 보고
 	OnHandChanged.Broadcast(Hand);
 	OnAPChanged.Broadcast(CurrentAP, MaxAP);
 
@@ -117,7 +131,7 @@ void UDeckComponent::EndTurn()
 {
 	UE_LOG(LogTemp, Warning, TEXT("=== 플레이어 턴 종료 ==="));
 
-	// [상대 턴 행동 처리]
+	// 상대 턴 행동 처리
 	// 이곳에 적군의 행동 로직(AI)이 들어갈 자리입니다.
 	// 예: EnemyManager->ExecuteEnemyTurn();
 
@@ -129,6 +143,7 @@ void UDeckComponent::EndTurn()
 
 void UDeckComponent::DrawCards(int32 Count)
 {
+	UE_LOG(LogTemp, Warning, TEXT("[DeckComponent] Attempting to draw %d cards. Current Deck: %d"), Count, Deck.Num());
 	for (int32 i = 0; i < Count; ++i)
 	{
 		if (Deck.Num() == 0)
@@ -138,10 +153,13 @@ void UDeckComponent::DrawCards(int32 Count)
 
 		if (Deck.Num() > 0)
 		{
-			Hand.Add(Deck.Pop());
+			FBWCardData DrawnCard = Deck.Pop();
+			Hand.Add(DrawnCard);
+			UE_LOG(LogTemp, Log, TEXT("[DeckComponent] Card Drawn: %s"), *DrawnCard.CardName);
 		}
 		else
 		{
+			UE_LOG(LogTemp, Error, TEXT("[DeckComponent] CANNOT DRAW: Deck and Discard are both EMPTY!"));
 			break; 
 		}
 	}
@@ -167,7 +185,7 @@ void UDeckComponent::ShuffleDiscardIntoDeck()
 	UE_LOG(LogTemp, Log, TEXT("[덱 고갈] 무덤 카드를 수거하여 복구 셔플했습니다."));
 }
 
-bool UDeckComponent::UseCard(int32 HandIndex, FCardData& OutCardData)
+bool UDeckComponent::UseCard(int32 HandIndex, FBWCardData& OutCardData)
 {
 	if (!Hand.IsValidIndex(HandIndex)) return false;
 
@@ -179,6 +197,23 @@ bool UDeckComponent::UseCard(int32 HandIndex, FCardData& OutCardData)
 		OnAPChanged.Broadcast(CurrentAP, MaxAP);
 		OutCardData = Hand[HandIndex];
 		
+		// [추가] 카드 사용 효과음 재생
+		if (OutCardData.CardSound.LoadSynchronous())
+		{
+			UGameplayStatics::PlaySound2D(GetWorld(), OutCardData.CardSound.Get());
+		}
+
+		// [추가] 카드 효과로 이동 포인트 획득
+		if (OutCardData.MovePointsGained > 0)
+		{
+			ABWCharacter* OwnerChar = Cast<ABWCharacter>(GetOwner());
+			if (OwnerChar)
+			{
+				OwnerChar->CurrentMovePoints += OutCardData.MovePointsGained;
+				OnMovePointsChanged.Broadcast(OwnerChar->CurrentMovePoints);
+			}
+		}
+
 		Discard.Add(OutCardData);
 		Hand.RemoveAt(HandIndex);
 
@@ -201,7 +236,7 @@ bool UDeckComponent::DiscardCardForBasicAction(int32 HandIndex)
 	{
 		CurrentAP -= ActionCost;
 		
-		FCardData DiscardedCard = Hand[HandIndex];
+		FBWCardData DiscardedCard = Hand[HandIndex];
 		Discard.Add(DiscardedCard);
 		Hand.RemoveAt(HandIndex);
 
