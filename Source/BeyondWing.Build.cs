@@ -17,7 +17,8 @@ public class BeyondWing : ModuleRules
                 "EnhancedInput",
                 "UMG",
                 "Slate",
-                "SlateCore"
+                "SlateCore",
+                "Niagara"
             });
 
         string BasePath = Path.Combine(Target.ProjectFile.Directory.FullName, "Source", "BeyondWing");

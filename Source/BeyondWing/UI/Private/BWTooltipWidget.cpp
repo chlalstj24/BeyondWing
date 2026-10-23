@@ -44,7 +44,8 @@ void UBWTooltipWidget::SetupFromCardData(const FBWCardData& CardData, ABWCharact
 void UBWTooltipWidget::SetupFromEnemyPattern(const FBWEnemyPattern& Pattern)
 {
 	SetTooltipTitle(Pattern.ActionName);
-	SetTooltipDescription(Pattern.Description, Pattern.Value, Pattern.MoveDistance, Pattern.Range);
+	// [수정] {V}=숫자 범위 최댓값, {R}=최솟값 (적 스킬은 합에서 이 범위로 굴린다)
+	SetTooltipDescription(Pattern.Description, Pattern.SkillRange.Max, 0, Pattern.SkillRange.Min);
 }
 
 FString UBWTooltipWidget::FormatTemplate(const FString& Raw, int32 V, int32 D, int32 R)
