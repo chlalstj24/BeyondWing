@@ -11,6 +11,13 @@
 #include "Framework/Application/SlateApplication.h"
 #include "Blueprint/SlateBlueprintLibrary.h"
 
+// [추가] 카드 좌측 하단 사거리 그림: T_CardRange_0 = 나 자신(효과카드), 1~MaxReach = 상하좌우 칸 수. 더 긴 사거리는 MaxReach 그림
+namespace BWRangeArt
+{
+	static const TCHAR* Folder = TEXT("/Game/HUD/Texture/CardRange");
+	static constexpr int32 MaxReach = 6;
+}
+
 void UBWHandWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
@@ -70,6 +77,8 @@ void UBWHandWidget::RefreshHand(const TArray<FBWCardData>& InHandCards)
 	}
 
 	CardWidgets.Empty();
+	CancelHeldCard(); // 손패가 바뀌면 집고 있던 카드는 내려놓는다
+	DragIndex = -1;
 	CurrentTranslations.Empty();
 	CurrentRotations.Empty();
 	CurrentScales.Empty();
@@ -81,6 +90,19 @@ void UBWHandWidget::RefreshHand(const TArray<FBWCardData>& InHandCards)
 		if (NewCard)
 		{
 			NewCard->CardData = InHandCards[i];
+			// [수정] 공격카드에는 기본 공격에 더해 주는 몫(카드 범위 × 삶의 방식 배율, 스탯 반영)을 "+a~b"로 보여 준다
+			if (const ABWCharacter* OwnerChar = Cast<ABWCharacter>(GetOwningPlayerPawn()); OwnerChar && NewCard->CardData.CardKind == ECardKind::Attack)
+			{
+				const FBWDiceRange Shown = OwnerChar->GetCardBoostRange(NewCard->CardData);
+				NewCard->CardData.SkillMin = Shown.Min;
+				NewCard->CardData.SkillMax = Shown.Max;
+				NewCard->bShowAsBoost = true;
+			}
+			// [추가] 좌측 하단 그림 = 사거리 칸 그림 (공격카드 = Range, 효과카드 = 나 자신). 표의 Range를 바꾸면 그림도 따라 바뀐다
+			{
+				const int32 Reach = NewCard->CardData.CardKind == ECardKind::Attack ? FMath::Clamp(NewCard->CardData.Range, 1, BWRangeArt::MaxReach) : 0;
+				NewCard->CardData.AboveImage = TSoftObjectPtr<UTexture2D>(FSoftObjectPath(FString::Printf(TEXT("%s/T_CardRange_%d.T_CardRange_%d"), BWRangeArt::Folder, Reach, Reach)));
+			}
 			NewCard->HandIndex = i;
 			NewCard->OwningHand = this;
 			
@@ -98,6 +120,12 @@ void UBWHandWidget::RefreshHand(const TArray<FBWCardData>& InHandCards)
 			CurrentRotations.Add(0.0f);
 			CurrentScales.Add(1.0f);
 			NewCard->K2_InitCardUI();
+			// 겔레온에서 고르지 않은 종류의 카드는 흐리게 (써지지는 않고 안내만 뜬다)
+			if (const ABWPlayerController* PC = Cast<ABWPlayerController>(GetOwningPlayer()); PC && !UBWDimensionRules::CanUseCard(PC->Battlefield, NewCard->CardData))
+			{
+				// 카드 그림이 색 보정을 받지 않는 재질이라 어둡게 대신 반투명으로 표시한다
+				NewCard->SetRenderOpacity(0.45f);
+			}
 		}
 	}
 	UpdateCardLayout();
@@ -130,12 +158,14 @@ void UBWHandWidget::UpdateCardLayout()
 	int32 CardCount = CardWidgets.Num();
 	if (CardCount == 0) return;
 
-	float TotalAngle = (CardCount - 1) * AngleStep;
+	// [수정] 손패가 많아지면(최대 10장) 부채꼴 전체 각도를 MaxFanAngle 안으로 줄여 카드가 겹치게 한다
+	const float Step = CardCount > 1 ? FMath::Min(AngleStep, MaxFanAngle / (CardCount - 1)) : AngleStep;
+	float TotalAngle = (CardCount - 1) * Step;
 	float StartAngle = -TotalAngle / 2.0f;
 
 	for (int32 i = 0; i < CardCount; ++i)
 	{
-		float CurrentAngle = StartAngle + (i * AngleStep);
+		float CurrentAngle = StartAngle + (i * Step);
 		float RadAngle = FMath::DegreesToRadians(CurrentAngle - 90.0f);
 
 		FVector2D Pos;
@@ -158,6 +188,108 @@ void UBWHandWidget::UpdateCardLayout()
 	}
 }
 
+void UBWHandWidget::UpdateDrag(const FGeometry& MyGeometry)
+{
+	const bool bMouseDown = FSlateApplication::Get().GetPressedMouseButtons().Contains(EKeys::LeftMouseButton);
+	const FVector2D MouseLocal = MyGeometry.AbsoluteToLocal(FSlateApplication::Get().GetCursorPos());
+
+	// 누르는 순간 마우스 아래 카드를 잡는다 (숫자 키로 집은 카드가 있으면 그 클릭은 컨트롤러가 놓기로 처리)
+	if (bMouseDown && !bWasMouseDown && HoveredCard && SelectedCardIndex == -1 && HeldIndex == -1)
+	{
+		DragIndex = HoveredCard->HandIndex;
+		DragStartLocal = MouseLocal;
+		DragOffset = FVector2D::ZeroVector;
+	}
+
+	if (DragIndex != -1)
+	{
+		if (bMouseDown)
+		{
+			// 조금이라도 움직였을 때만 끌기로 본다 (그냥 클릭은 카드 버튼이 처리)
+			const FVector2D Delta = MouseLocal - DragStartLocal;
+			DragOffset = Delta.SizeSquared() > 25.0f ? Delta : FVector2D::ZeroVector;
+		}
+		else
+		{
+			// 놓았을 때 충분히 위로 끌었으면 사용
+			const float Lift = DragStartLocal.Y - MouseLocal.Y;
+			const int32 UsedIndex = DragIndex;
+			DragIndex = -1;
+			DragOffset = FVector2D::ZeroVector;
+			if (Lift >= DragUseDistance)
+			{
+				if (ABWPlayerController* PC = Cast<ABWPlayerController>(GetOwningPlayer())) PC->UseCardShortcut(UsedIndex);
+			}
+		}
+	}
+	bWasMouseDown = bMouseDown;
+}
+
+void UBWHandWidget::ToggleHoldCard(int32 Index)
+{
+	if (HeldIndex == Index)
+	{
+		CancelHeldCard();
+		return;
+	}
+	if (!CardWidgets.IsValidIndex(Index)) return;
+	DragIndex = -1;
+	DragOffset = FVector2D::ZeroVector;
+	HeldIndex = Index;
+	HeldOffset = FVector2D::ZeroVector;
+	if (HoveredCard) HoveredCard->SetHovered(false);
+}
+
+int32 UBWHandWidget::GetFocusedCardIndex() const
+{
+	if (HeldIndex != -1) return HeldIndex;
+	if (DragIndex != -1) return DragIndex;
+	return HoveredCard ? HoveredCard->HandIndex : -1;
+}
+
+bool UBWHandWidget::ShouldIgnoreCardClick() const
+{
+	return HeldIndex != -1 || FPlatformTime::Seconds() - LastHeldReleaseTime < 0.4;
+}
+
+void UBWHandWidget::CancelHeldCard()
+{
+	if (HeldIndex != -1) LastHeldReleaseTime = FPlatformTime::Seconds();
+	HeldIndex = -1;
+	HeldOffset = FVector2D::ZeroVector;
+}
+
+bool UBWHandWidget::ReleaseHeldCard()
+{
+	if (!CardWidgets.IsValidIndex(HeldIndex))
+	{
+		CancelHeldCard();
+		return false;
+	}
+	// 카드가 쉬던 자리(회전된 루트 판정 영역) 위에서 누르면 제자리에 내려놓는다
+	const int32 Index = HeldIndex;
+	const bool bOverHome = CardWidgets[Index]->GetCachedGeometry().IsUnderLocation(FSlateApplication::Get().GetCursorPos());
+	CancelHeldCard();
+	if (bOverHome) return false;
+	if (ABWPlayerController* PC = Cast<ABWPlayerController>(GetOwningPlayer())) PC->UseCardShortcut(Index);
+	return true;
+}
+
+void UBWHandWidget::UpdateHeld(const FGeometry& MyGeometry)
+{
+	if (!CardWidgets.IsValidIndex(HeldIndex))
+	{
+		CancelHeldCard();
+		return;
+	}
+	// 카드 가운데가 마우스에 오도록: 쉬던 자리 가운데에서 마우스까지의 거리를 카드 회전만큼 되돌려 비주얼에 준다
+	const UBWCardWidget* Card = CardWidgets[HeldIndex];
+	const FGeometry& CardGeo = Card->GetCachedGeometry();
+	const FVector2D HomeCenter = MyGeometry.AbsoluteToLocal(CardGeo.LocalToAbsolute(CardGeo.GetLocalSize() * 0.5f));
+	const FVector2D MouseLocal = MyGeometry.AbsoluteToLocal(FSlateApplication::Get().GetCursorPos());
+	HeldOffset = (MouseLocal - HomeCenter).GetRotated(-Card->TargetRotation);
+}
+
 void UBWHandWidget::OnCardHovered(UBWCardWidget* InCard)
 {
 	if (HoveredCard && HoveredCard != InCard) HoveredCard->SetHovered(false);
@@ -175,6 +307,10 @@ void UBWHandWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 
 	float ActualSpeed = (InterpSpeed <= 0.0f) ? 10.0f : InterpSpeed;
 
+	// [추가] 카드를 위로 끌어 놓으면 사용
+	UpdateDrag(MyGeometry);
+	if (HeldIndex != -1) UpdateHeld(MyGeometry);
+
 	// [수동 히트 테스트: ACE 버그 완전 종결]
 	// UMG의 기본 Z-Order 판정은 '그리는 순서'와 '판정 순서'가 묶여있어 유저님의 요구를 충족할 수 없습니다.
 	// 따라서 C++이 직접 마우스 위치를 가져와 "오른쪽 카드부터(역순)" 마우스 충돌을 직접 검사합니다.
@@ -182,7 +318,7 @@ void UBWHandWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 	// 역순 루프에 의해 B카드가 무조건 우선권을 뺏어오게 됩니다. (시각과 판정의 완벽한 분리)
 	
 	APlayerController* PC = GetOwningPlayer();
-	if (PC && SelectedCardIndex == -1)
+	if (PC && SelectedCardIndex == -1 && HeldIndex == -1)
 	{
 		// [좌표 오차 완벽 해결] IsUnderLocation은 모니터 기준의 '절대 좌표'를 사용합니다.
 		// SlateApplication에서 직접 가져온 커서 위치는 에디터 창의 위치나 DPI 배율과 상관없이 
@@ -222,7 +358,25 @@ void UBWHandWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 
 		int32 BaseZOrder = i * 2; 
 
-		if (i == SelectedCardIndex)
+		if (i == HeldIndex)
+		{
+			// 숫자 키로 집은 카드는 마우스를 따라다닌다
+			if (CardSlot) CardSlot->SetZOrder(600);
+			TargetOffset = HeldOffset;
+			TargetRot = 0.0f;
+			TargetScale = HoverScale;
+			if (CurrentTranslations.IsValidIndex(i)) CurrentTranslations[i] = HeldOffset;
+		}
+		else if (i == DragIndex && !DragOffset.IsNearlyZero())
+		{
+			// 끄는 중인 카드는 마우스를 그대로 따라간다
+			if (CardSlot) CardSlot->SetZOrder(600);
+			TargetOffset = DragOffset;
+			TargetRot = 0.0f;
+			TargetScale = HoverScale;
+			if (CurrentTranslations.IsValidIndex(i)) CurrentTranslations[i] = DragOffset;
+		}
+		else if (i == SelectedCardIndex)
 		{
 			if (CardSlot) CardSlot->SetZOrder(500);
 			FVector2D CurrentSlotPos = CardSlot ? CardSlot->GetPosition() : FVector2D::ZeroVector;

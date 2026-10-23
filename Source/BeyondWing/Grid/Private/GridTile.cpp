@@ -76,11 +76,15 @@ void AGridTile::SetTileState(ETileState NewState)
 	{
 	case ETileState::Hovered:     Color = FLinearColor::Yellow; break;
 	case ETileState::MoveRange:   Color = FLinearColor::Blue; break;
-	case ETileState::AttackRange: Color = FLinearColor::Red; break;
+	case ETileState::AttackRange: Color = FLinearColor(0.0f, 0.65f, 1.0f); break; // [수정] 내 공격 사거리 (하늘색, 적 구역 빨강과 구분)
 	case ETileState::EnemyAttackRange: Color = FLinearColor(0.8f, 0.0f, 1.0f); break; // 보라색 (가시성 확보)
-	case ETileState::AttackTarget: Color = FLinearColor(0.5f, 0.0f, 0.0f); break; 
+	case ETileState::AttackTarget: Color = FLinearColor(1.0f, 0.6f, 0.0f); break; // [수정] 합을 걸 수 있는 적 (금색, 고르는 중에는 사거리 칸이 적 경로를 덮는다)
 	case ETileState::AllyZone:    Color = FLinearColor(0.0f, 0.2f, 1.0f); break;
 	case ETileState::EnemyZone:   Color = FLinearColor(1.0f, 0.02f, 0.02f); break;
+	case ETileState::Wall:        Color = FLinearColor(0.12f, 0.12f, 0.12f); break; // [추가] 장애물 벽
+	case ETileState::EnemyMovePath: Color = FLinearColor(1.0f, 0.5f, 0.05f); break;   // [추가] 적 돌진 경로 (주황)
+	case ETileState::EnemyUnit:   Color = FLinearColor(1.0f, 0.08f, 0.15f); break;    // [추가] 적 발밑 (빨강)
+	case ETileState::PlayerUnit:  Color = FLinearColor(0.1f, 0.9f, 0.6f); break;      // [추가] 내 발밑 (청록)
 	default:                      Color = FLinearColor::Transparent; break;
 	}
     

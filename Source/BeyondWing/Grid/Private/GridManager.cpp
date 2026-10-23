@@ -7,16 +7,42 @@
 #include "BeyondWing/Core/Public/BWGameInstance.h"
 #include "Particles/ParticleSystem.h"
 #include "Sound/SoundBase.h"
+#include "Engine/Engine.h"
 
 AGridManager::AGridManager()
 {
 	PrimaryActorTick.bCanEverTick = false;
 	Width = 8;
-	Height = 8;
+	Height = 8; // [수정] 8×8 (사용자 결정). 아군 구역은 왼쪽 AllyZoneColumns(4)열
 	TileSpacing = 120.0f;
 	TotalSpawnDuration = 0.75f; 
 	TileSpawnHeightOffset = 150.0f;
 	bIsGridReady = false;
+}
+
+FVector AGridManager::GetTileWorldLocation(FIntPoint Coord) const
+{
+	// [수정] 전투 기획서 2장: 가로 8 × 세로 5, 왼쪽 4열이 아군. 카메라가 월드 +X를 보고 있으므로
+	// 칸의 X(아군→적)를 월드 +Y(화면 오른쪽)에, Y를 월드 X(화면 깊이)에 놓는다
+	if (bColumnsAlongWorldY) return GetActorLocation() + FVector(Coord.Y * TileSpacing, Coord.X * TileSpacing, 0.0f);
+	return GetActorLocation() + FVector(Coord.X * TileSpacing, Coord.Y * TileSpacing, 0.0f);
+}
+
+bool AGridManager::WorldToGrid(FVector WorldLocation, FIntPoint& OutCoord) const
+{
+	if (TileSpacing <= 0.0f) return false;
+	const FVector Local = WorldLocation - GetActorLocation();
+	// 칸 중심이 GetTileWorldLocation이므로 반 칸 범위까지 같은 칸으로 본다
+	const int32 AlongX = FMath::RoundToInt((bColumnsAlongWorldY ? Local.Y : Local.X) / TileSpacing);
+	const int32 AlongY = FMath::RoundToInt((bColumnsAlongWorldY ? Local.X : Local.Y) / TileSpacing);
+	OutCoord = FIntPoint(AlongX, AlongY);
+	return AlongX >= 0 && AlongX < Width && AlongY >= 0 && AlongY < Height;
+}
+
+FRotator AGridManager::GetFacingRotation(FIntPoint GridDir) const
+{
+	const FVector WorldDir = GetTileWorldLocation(GridDir) - GetTileWorldLocation(FIntPoint::ZeroValue);
+	return FRotator(0.0f, WorldDir.Rotation().Yaw, 0.0f);
 }
 
 void AGridManager::GenerateGridInEditor()
@@ -40,7 +66,7 @@ void AGridManager::GenerateGrid()
 	{
 		for (int32 y = 0; y < Height; ++y)
 		{
-			FVector FinalLocation = GetActorLocation() + FVector(x * TileSpacing, y * TileSpacing, 0.0f);
+			FVector FinalLocation = GetTileWorldLocation(FIntPoint(x, y));
 			FVector SpawnLocation = FinalLocation + FVector(0, 0, TileSpawnHeightOffset);
 			
 			FActorSpawnParameters SpawnParams;
@@ -91,7 +117,7 @@ void AGridManager::SpawnWeightGroup(int32 CurrentWeight)
 			Tile->SetActorHiddenInGame(false);
 			Tile->SetActorEnableCollision(true);
 			
-			FVector FinalLoc = GetActorLocation() + FVector(Elem.Key.X * TileSpacing, Elem.Key.Y * TileSpacing, 0.0f);
+			FVector FinalLoc = GetTileWorldLocation(Elem.Key);
 			Tile->StartLandingAnimation(FinalLoc, 0.4f);
 			
 			bAnySpawned = true;
@@ -141,7 +167,7 @@ void AGridManager::SpawnEnemies()
 
 			FVector SpawnLoc = TargetTile->GetActorLocation() + FVector(0, 0, 20.0f);
 			FActorSpawnParameters Params;
-			ABWCharacter* NewEnemy = GetWorld()->SpawnActor<ABWCharacter>(Data->EnemyClass, SpawnLoc, FRotator(0, 180.0f, 0), Params);
+			ABWCharacter* NewEnemy = GetWorld()->SpawnActor<ABWCharacter>(Data->EnemyClass, SpawnLoc, GetFacingRotation(FIntPoint(-1, 0)), Params); // 적은 아군 쪽(왼쪽)을 본다
 			
 			if (NewEnemy)
 			{
@@ -150,11 +176,13 @@ void AGridManager::SpawnEnemies()
 				NewEnemy->EnemyDisplayName = Data->EnemyDisplayName;
 				DeployedCharacters.Add(NewEnemy);
 				
-				NewEnemy->BaseAttackPower = Data->BaseAttackPower;
+				NewEnemy->EnemyOrder = SpawnedCount;
 				NewEnemy->MaxHP = Data->MaxHP;
 				NewEnemy->CurrentHP = Data->MaxHP;
 				NewEnemy->CombatPatterns = Data->CombatPatterns;
 				NewEnemy->CurrentPatternIndex = 0;
+				NewEnemy->SpeedDice = Data->SpeedDice;
+				NewEnemy->Block = Data->StartingBlock;
 				
 				SpawnedCount++;
 				if (CharacterPlacementSound)
@@ -171,22 +199,41 @@ void AGridManager::SpawnEnemies()
 
 void AGridManager::CheckVictoryCondition()
 {
+	if (bBattleOver) return;
+
 	bool bAreAnyEnemiesAlive = false;
+	bool bIsPlayerAlive = false;
+	bool bHasPlayer = false;
 	for (ABWCharacter* Char : DeployedCharacters)
 	{
-		if (Char && !Char->IsActorBeingDestroyed() && Char->bIsEnemy && Char->CurrentHP > 0)
-		{
-			bAreAnyEnemiesAlive = true;
-			break;
-		}
+		if (!Char || Char->IsActorBeingDestroyed()) continue;
+		if (Char->bIsEnemy) bAreAnyEnemiesAlive |= Char->CurrentHP > 0;
+		else { bHasPlayer = true; bIsPlayerAlive |= Char->CurrentHP > 0; }
+	}
+
+	// [추가] 1장 패배: 아군 말이 쓰러지면 패배 (HP 0이면 사망)
+	if (bHasPlayer && !bIsPlayerAlive)
+	{
+		bBattleOver = true;
+		UE_LOG(LogTemp, Warning, TEXT("[BWCombat] Defeat: the player fell."));
+#if !UE_BUILD_SHIPPING
+		if (GEngine) GEngine->AddOnScreenDebugMessage(-1, 5.0f, FColor::Red, TEXT("패배: 아군 말이 쓰러졌습니다."));
+#endif
+		// [추가] 판이 끝났으니 이어하기 저장을 지운다
+		if (UBWGameInstance* GI = Cast<UBWGameInstance>(GetGameInstance())) GI->DeleteSavedRun();
+		FTimerHandle DefeatTimer;
+		GetWorldTimerManager().SetTimer(DefeatTimer, [this]() { UGameplayStatics::OpenLevel(GetWorld(), TEXT("TitleLevel")); }, 2.0f, false);
+		return;
 	}
 
 	if (!bAreAnyEnemiesAlive)
 	{
+		bBattleOver = true;
 		UBWGameInstance* GI = Cast<UBWGameInstance>(GetGameInstance());
 		if (GI)
 		{
 			GI->GenerateCombatRewards(GI->CurrentEncounterType);
+			GI->SaveRun(); // [추가] 이긴 상태(HP·보상·지도 위치)로 이어하기 저장
 			UGameplayStatics::OpenLevel(GetWorld(), TEXT("MapLevel"));
 		}
 	}
@@ -194,9 +241,14 @@ void AGridManager::CheckVictoryCondition()
 
 void AGridManager::FinalizeGridColors()
 {
+	// [추가] 이번 전투의 장애물 벽
+	if (UBWGameInstance* GI = Cast<UBWGameInstance>(GetGameInstance())) WallCoords = GI->PendingWallTiles;
+
 	for (auto& Elem : GridMap)
 	{
-		if (Elem.Key.X >= 0 && Elem.Key.X <= 2)
+		if (WallCoords.Contains(Elem.Key))
+			Elem.Value->DefaultZoneState = ETileState::Wall;
+		else if (IsAllyZoneColumn(Elem.Key.X))
 			Elem.Value->DefaultZoneState = ETileState::AllyZone;
 		else
 			Elem.Value->DefaultZoneState = ETileState::None;
@@ -221,6 +273,22 @@ void AGridManager::FinalizeGridColors()
 void AGridManager::BeginPlay()
 {
 	Super::BeginPlay();
+
+	// [추가] 에디터에서 GenerateGridInEditor로 미리 깔아 둔 타일은 크기가 옛 값일 수 있으므로 런타임 그리드와 겹치지 않게 제거
+	// (레벨에 저장되면 부착은 풀리고 Owner만 남는다)
+	TArray<AActor*> ExistingTiles;
+	UGameplayStatics::GetAllActorsOfClass(GetWorld(), AGridTile::StaticClass(), ExistingTiles);
+	for (AActor* Actor : ExistingTiles)
+	{
+		if (Actor && (Actor->GetOwner() == this || Actor->GetAttachParentActor() == this)) Actor->Destroy();
+	}
+	// GridMap·TilePool도 레벨에 함께 저장되어 옛 타일을 가리키므로 비우고 새로 만든다
+	GridMap.Empty();
+	TilePool.Empty();
+
+	CombatRandom.Initialize(FMath::Rand());
+	UE_LOG(LogTemp, Log, TEXT("[BWCombat] Combat random seed: %d"), CombatRandom.GetInitialSeed());
+
 	GenerateGrid();
 	StartDiagonalWave();
 }
@@ -262,8 +330,8 @@ void AGridManager::DrawSkillPreview(FIntPoint OriginIdx, FIntPoint TargetIdx, FB
 		case ESkillShape::Surround:       bHighlight = (FMath::Max(FMath::Abs(TileCoord.X - OriginIdx.X), FMath::Abs(TileCoord.Y - OriginIdx.Y)) == 1); break;
 		case ESkillShape::FrontRow:       bHighlight = (Forward == 1); break;
 		case ESkillShape::BackRow:        bHighlight = (Forward == -1); break;
-		case ESkillShape::AllEnemies:     bHighlight = (TileCoord.X >= Width - 3); break;
-		case ESkillShape::AllAllies:      bHighlight = (TileCoord.X <= 2); break;
+		case ESkillShape::AllEnemies:     bHighlight = (!IsAllyZoneColumn(TileCoord.X)); break;
+		case ESkillShape::AllAllies:      bHighlight = (IsAllyZoneColumn(TileCoord.X)); break;
 		case ESkillShape::Random:         bHighlight = (ManhattanToOrigin <= CardData.Range && ManhattanToOrigin > 0); break; 
 		case ESkillShape::Self:           bHighlight = (TileCoord == OriginIdx); break;
 		}
@@ -321,8 +389,8 @@ void AGridManager::AddEnemyIntentPreview(FIntPoint OriginIdx, FIntPoint TargetId
 		case ESkillShape::Surround:       bHighlight = (FMath::Max(FMath::Abs(TileCoord.X - ActualOrigin.X), FMath::Abs(TileCoord.Y - ActualOrigin.Y)) == 1); break;
 		case ESkillShape::FrontRow:       bHighlight = (Forward == 1); break;
 		case ESkillShape::BackRow:        bHighlight = (Forward == -1); break;
-		case ESkillShape::AllEnemies:     bHighlight = (TileCoord.X >= Width - 3); break;
-		case ESkillShape::AllAllies:      bHighlight = (TileCoord.X <= 2); break;
+		case ESkillShape::AllEnemies:     bHighlight = (!IsAllyZoneColumn(TileCoord.X)); break;
+		case ESkillShape::AllAllies:      bHighlight = (IsAllyZoneColumn(TileCoord.X)); break;
 		case ESkillShape::Random:         bHighlight = (ManhattanToOrigin <= Range && ManhattanToOrigin > 0); break;
 		}
 
@@ -336,16 +404,156 @@ void AGridManager::AddEnemyIntentPreview(FIntPoint OriginIdx, FIntPoint TargetId
 void AGridManager::DrawMovementPreview(FIntPoint OriginIdx, int32 MoveRange)
 {
 	ClearAllRanges();
+
+	// [수정] 맨해튼 거리 대신 실제 경로 기준 (다른 말은 못 지나가고, 접촉 칸에서 멈춤). 내 발밑도 표시
+	TMap<FIntPoint, int32> Distance;
+	TMap<FIntPoint, FIntPoint> Parent;
+	BuildMoveField(OriginIdx, MoveRange, false, Distance, Parent);
+
+	for (const TPair<FIntPoint, int32>& Reach : Distance)
+	{
+		if (AGridTile* Tile = GetTileAtCoordinate(Reach.Key)) Tile->SetTileState(ETileState::MoveRange);
+	}
+}
+
+void AGridManager::SetWallTiles(const TArray<FIntPoint>& Coords)
+{
+	WallCoords = Coords;
 	for (auto& Elem : GridMap)
 	{
-		FIntPoint TileCoord = Elem.Key;
-		int32 Distance = FMath::Abs(OriginIdx.X - TileCoord.X) + FMath::Abs(OriginIdx.Y - TileCoord.Y);
-		// [수정] 이동 범위 표시 시 내 발밑(Distance == 0)도 포함하여 파란색으로 표시
-		if (Distance >= 0 && Distance <= MoveRange)
+		const bool bWall = WallCoords.Contains(Elem.Key);
+		if (bWall) Elem.Value->DefaultZoneState = ETileState::Wall;
+		else if (Elem.Value->DefaultZoneState == ETileState::Wall) Elem.Value->DefaultZoneState = ETileState::None;
+		Elem.Value->SetTileState(Elem.Value->DefaultZoneState);
+	}
+}
+
+bool AGridManager::IsWallOrOutside(FIntPoint Coord) const
+{
+	return !GridMap.Contains(Coord) || WallCoords.Contains(Coord);
+}
+
+bool AGridManager::TryPushCharacter(ABWCharacter* Target, FIntPoint Dir, bool& bOutHitWall)
+{
+	bOutHitWall = false;
+	if (!Target) return false;
+
+	const FIntPoint Dest = Target->OwnGridCoordinate + Dir;
+	if (IsWallOrOutside(Dest))
+	{
+		bOutHitWall = true;
+		return false;
+	}
+	if (GetCharacterAtCoordinate(Dest)) return false; // 다른 말에 막히면 밀리지 않는다 (말은 벽이 아님)
+
+	Target->OwnGridCoordinate = Dest;
+	if (AGridTile* DestTile = GetTileAtCoordinate(Dest)) Target->AddMovementStep(DestTile->GetActorLocation() + FVector(0, 0, 20));
+	return true;
+}
+
+bool AGridManager::IsTileWalkable(FIntPoint Coord)
+{
+	AGridTile* Tile = GetTileAtCoordinate(Coord);
+	if (!Tile || Tile->DefaultZoneState == ETileState::Wall) return false;
+	return GetCharacterAtCoordinate(Coord) == nullptr;
+}
+
+ABWCharacter* AGridManager::FindContactOpponent(FIntPoint Coord, bool bMoverIsEnemy)
+{
+	static const FIntPoint Dirs[] = { FIntPoint(1, 0), FIntPoint(-1, 0), FIntPoint(0, 1), FIntPoint(0, -1) };
+	for (const FIntPoint& Dir : Dirs)
+	{
+		ABWCharacter* Other = GetCharacterAtCoordinate(Coord + Dir);
+		if (Other && Other->bIsEnemy != bMoverIsEnemy && Other->CurrentHP > 0) return Other;
+	}
+	return nullptr;
+}
+
+void AGridManager::BuildMoveField(FIntPoint Origin, int32 MaxSteps, bool bMoverIsEnemy, TMap<FIntPoint, int32>& OutDistance, TMap<FIntPoint, FIntPoint>& OutParent)
+{
+	static const FIntPoint Dirs[] = { FIntPoint(1, 0), FIntPoint(-1, 0), FIntPoint(0, 1), FIntPoint(0, -1) };
+
+	OutDistance.Reset();
+	OutParent.Reset();
+	OutDistance.Add(Origin, 0);
+
+	// 너비 우선 탐색: 속도 1당 1칸
+	TArray<FIntPoint> Queue;
+	Queue.Add(Origin);
+	for (int32 Head = 0; Head < Queue.Num(); ++Head)
+	{
+		const FIntPoint Current = Queue[Head];
+		const int32 Dist = OutDistance[Current];
+		if (Dist >= MaxSteps) continue;
+
+		// 이동하다 상대와 접촉하면 그 칸에서 멈춘다 (출발 칸은 이미 접촉 중이어도 떠날 수 있음)
+		if (Current != Origin && FindContactOpponent(Current, bMoverIsEnemy)) continue;
+
+		for (const FIntPoint& Dir : Dirs)
 		{
-			if (GetCharacterAtCoordinate(TileCoord) == nullptr || TileCoord == OriginIdx) Elem.Value->SetTileState(ETileState::MoveRange);
+			const FIntPoint Next = Current + Dir;
+			if (OutDistance.Contains(Next) || !IsTileWalkable(Next)) continue;
+			OutDistance.Add(Next, Dist + 1);
+			OutParent.Add(Next, Current);
+			Queue.Add(Next);
 		}
 	}
+}
+
+TArray<FIntPoint> AGridManager::FindRushPath(FIntPoint Origin, FIntPoint Target, int32 MaxSteps, bool bMoverIsEnemy)
+{
+	TArray<FIntPoint> Path;
+	const FIntPoint Delta = Target - Origin;
+	if (MaxSteps <= 0 || FMath::Abs(Delta.X) + FMath::Abs(Delta.Y) <= 1) return Path;
+
+	// 거리 제한 없이 펼쳐서 '가장 가까운 접촉 칸'을 고른 뒤 속도만큼 자른다
+	TMap<FIntPoint, int32> Distance;
+	TMap<FIntPoint, FIntPoint> Parent;
+	BuildMoveField(Origin, Width * Height, bMoverIsEnemy, Distance, Parent);
+
+	bool bFound = false;
+	FIntPoint Goal = Origin;
+	int32 BestDist = MAX_int32;
+	static const FIntPoint Dirs[] = { FIntPoint(1, 0), FIntPoint(-1, 0), FIntPoint(0, 1), FIntPoint(0, -1) };
+	for (const FIntPoint& Dir : Dirs)
+	{
+		const int32* D = Distance.Find(Target + Dir);
+		if (D && *D < BestDist) { BestDist = *D; Goal = Target + Dir; bFound = true; }
+	}
+
+	// 접촉 칸이 모두 막혔으면 Target에 가장 가까워지는 칸 (같으면 덜 걷는 칸)
+	if (!bFound)
+	{
+		int32 BestManhattan = FMath::Abs(Delta.X) + FMath::Abs(Delta.Y);
+		for (const TPair<FIntPoint, int32>& Reach : Distance)
+		{
+			const int32 Manhattan = FMath::Abs(Target.X - Reach.Key.X) + FMath::Abs(Target.Y - Reach.Key.Y);
+			if (Manhattan < BestManhattan || (Manhattan == BestManhattan && bFound && Reach.Value < BestDist))
+			{
+				BestManhattan = Manhattan; BestDist = Reach.Value; Goal = Reach.Key; bFound = true;
+			}
+		}
+		if (!bFound) return Path;
+	}
+
+	for (FIntPoint Step = Goal; Step != Origin; Step = Parent[Step]) Path.Insert(Step, 0);
+	if (Path.Num() > MaxSteps) Path.SetNum(MaxSteps);
+	return Path;
+}
+
+TArray<FIntPoint> AGridManager::FindMovePath(FIntPoint Origin, FIntPoint Target, int32 MaxSteps, bool bMoverIsEnemy)
+{
+	TArray<FIntPoint> Path;
+	TMap<FIntPoint, int32> Distance;
+	TMap<FIntPoint, FIntPoint> Parent;
+	BuildMoveField(Origin, MaxSteps, bMoverIsEnemy, Distance, Parent);
+	if (Target == Origin || !Distance.Contains(Target)) return Path;
+
+	for (FIntPoint Step = Target; Step != Origin; Step = Parent[Step])
+	{
+		Path.Insert(Step, 0);
+	}
+	return Path;
 }
 
 ABWCharacter* AGridManager::GetCharacterAtCoordinate(FIntPoint Coord)
@@ -359,7 +567,8 @@ void AGridManager::DrawPlacementGuidelines()
 {
 	for (auto& Elem : GridMap)
 	{
-		if (Elem.Key.X >= 0 && Elem.Key.X <= 2) Elem.Value->SetTileState(ETileState::AllyZone);
+		if (Elem.Value->DefaultZoneState == ETileState::Wall) Elem.Value->SetTileState(ETileState::Wall);
+		else if (IsAllyZoneColumn(Elem.Key.X)) Elem.Value->SetTileState(ETileState::AllyZone);
 		else Elem.Value->SetTileState(ETileState::None);
 	}
 	RefreshEnemyIntents();
@@ -367,7 +576,7 @@ void AGridManager::DrawPlacementGuidelines()
 
 bool AGridManager::IsValidAllyPlacementArea(FIntPoint Coord)
 {
-	if (Coord.X >= 0 && Coord.X <= 2 && Coord.Y >= 0 && Coord.Y < Height)
+	if (IsAllyZoneColumn(Coord.X) && Coord.Y >= 0 && Coord.Y < Height && !WallCoords.Contains(Coord))
 	{
 		for (ABWCharacter* Char : DeployedCharacters) if (Char && Char->OwnGridCoordinate == Coord) return false;
 		return true;
@@ -382,14 +591,15 @@ bool AGridManager::TryPlaceCharacter(FIntPoint TargetCoord, TSubclassOf<ABWChara
 	if (!TargetTile) return false;
 
 	FVector SpawnLoc = TargetTile->GetActorLocation() + FVector(0, 0, 20);
-	ABWCharacter* NewChar = GetWorld()->SpawnActor<ABWCharacter>(CharClass, SpawnLoc, FRotator::ZeroRotator);
+	ABWCharacter* NewChar = GetWorld()->SpawnActor<ABWCharacter>(CharClass, SpawnLoc, GetFacingRotation(FIntPoint(1, 0))); // 아군은 적 쪽(오른쪽)을 본다
 	if (NewChar)
 	{
 		NewChar->OwnGridCoordinate = TargetCoord;
 		DeployedCharacters.Add(NewChar);
 		for (auto& Elem : GridMap)
 		{
-			Elem.Value->DefaultZoneState = ETileState::None;
+			// 배치가 끝나면 아군 구역 표시는 지우되 벽은 남긴다
+			Elem.Value->DefaultZoneState = WallCoords.Contains(Elem.Key) ? ETileState::Wall : ETileState::None;
 			Elem.Value->SetTileState(ETileState::None);
 		}
 		if (CharacterPlacementSound) UGameplayStatics::PlaySoundAtLocation(GetWorld(), CharacterPlacementSound, SpawnLoc);
@@ -461,7 +671,24 @@ void AGridManager::RefreshEnemyIntents()
 	for (AActor* Actor : FoundActors)
 	{
 		ABWCharacter* Char = Cast<ABWCharacter>(Actor);
-		if (Char && Char->bIsEnemy && Char->CurrentHP > 0) Char->VisualizeEnemyIntent();
+		if (Char && Char->bIsEnemy && Char->CurrentHP > 0)
+		{
+			// 내가 움직이면 적의 돌진 경로도 바뀌므로 지금 위치 기준으로 다시 계산해서 보여 준다
+			Char->UpdateEnemyIntent();
+			Char->VisualizeEnemyIntent();
+		}
+	}
+
+	// [추가] 말이 서 있는 칸을 빛나게 한다 (적은 빨강, 나는 청록). 공격 대상·마우스 강조는 덮지 않는다
+	for (AActor* Actor : FoundActors)
+	{
+		ABWCharacter* Char = Cast<ABWCharacter>(Actor);
+		if (!Char || Char->CurrentHP <= 0 || Char->IsActorBeingDestroyed()) continue;
+		AGridTile* Tile = GetTileAtCoordinate(Char->OwnGridCoordinate);
+		// 적이 노리는 내 칸(보라)은 그대로 둬서 적 의도 툴팁이 뜨게 한다
+		if (!Tile || Tile->CurrentState == ETileState::AttackTarget || Tile->CurrentState == ETileState::Hovered ||
+			Tile->CurrentState == ETileState::MoveRange || Tile->CurrentState == ETileState::EnemyAttackRange) continue;
+		Tile->SetTileState(Char->bIsEnemy ? ETileState::EnemyUnit : ETileState::PlayerUnit);
 	}
 }
 
@@ -501,8 +728,8 @@ TArray<FIntPoint> AGridManager::GetAffectedCoordinates(FIntPoint OriginIdx, FInt
 		case ESkillShape::Surround:       bHighlight = (FMath::Max(FMath::Abs(TileCoord.X - OriginIdx.X), FMath::Abs(TileCoord.Y - OriginIdx.Y)) == 1); break;
 		case ESkillShape::FrontRow:       bHighlight = (Forward == 1); break;
 		case ESkillShape::BackRow:        bHighlight = (Forward == -1); break;
-		case ESkillShape::AllEnemies:     bHighlight = (TileCoord.X >= Width - 3); break;
-		case ESkillShape::AllAllies:      bHighlight = (TileCoord.X <= 2); break;
+		case ESkillShape::AllEnemies:     bHighlight = (!IsAllyZoneColumn(TileCoord.X)); break;
+		case ESkillShape::AllAllies:      bHighlight = (IsAllyZoneColumn(TileCoord.X)); break;
 		case ESkillShape::Random:         bHighlight = (ManhattanToOrigin <= Range && ManhattanToOrigin > 0); break;
 		case ESkillShape::Self:           bHighlight = (TileCoord == OriginIdx); break;
 		}

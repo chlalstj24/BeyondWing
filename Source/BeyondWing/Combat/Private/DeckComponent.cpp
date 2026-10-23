@@ -1,12 +1,11 @@
 #include "DeckComponent.h"
 #include "BWCharacter.h"
+#include "BeyondWing/Core/Public/BWGameInstance.h"
 #include "Kismet/GameplayStatics.h"
 
 UDeckComponent::UDeckComponent()
 {
 	PrimaryComponentTick.bCanEverTick = false;
-	CurrentAP = 0;
-	MaxAP = 0;
 	TurnCount = 0;
 }
 
@@ -14,11 +13,10 @@ void UDeckComponent::BeginPlay()
 {
 	Super::BeginPlay();
 	TurnCount = 0;
-	
-	// 기획 요청 사양: AP 자원은 3으로 시작하며 최대 10까지 증가 가능
-	MaxAP = 3;
-	CurrentAP = MaxAP;
 
+	// [수정] 적은 카드를 쓰지 않는다 (적 블루프린트에도 덱 컴포넌트가 붙어 있어 매번 에러가 찍히던 것)
+	const ABWCharacter* OwnerChar = Cast<ABWCharacter>(GetOwner());
+	if (OwnerChar && OwnerChar->bIsEnemy) return;
 	LoadDeckByCharacterClass();
 }
 
@@ -35,7 +33,11 @@ void UDeckComponent::LoadDeckByCharacterClass()
 
 	const TArray<FName>* TargetSourceList = nullptr;
 
-	switch (OwnerCharacter->CharacterClass)
+	// [추가] 삶의 방식 테이블(DT_Classes)에 시작 덱이 있으면 그것을 쓰고, 없으면 아래 직업별 배열을 쓴다
+	TArray<FName> TableDeck;
+	const UBWGameInstance* GI = Cast<UBWGameInstance>(UGameplayStatics::GetGameInstance(this));
+	if (GI && GI->GetClassStartingDeck(OwnerCharacter->CharacterClass, TableDeck)) TargetSourceList = &TableDeck;
+	else switch (OwnerCharacter->CharacterClass)
 	{
 	case EClassType::PHA: TargetSourceList = &PHAStartingDeck; break;
 	case EClassType::INT: TargetSourceList = &INTStartingDeck; break;
@@ -92,53 +94,22 @@ void UDeckComponent::InitializeCombatDeck(const TArray<FBWCardData>& MasterDeck)
 
 void UDeckComponent::StartTurn()
 {
-	// 첫 턴에는 3으로 시작하고, 이후 턴부터 1씩 증가
 	TurnCount++;
-	
-	if (TurnCount > 1 && MaxAP < 10)
-	{
-		MaxAP++;
-	}
-	CurrentAP = MaxAP;
-	bCanFreeMove = true; // 턴 시작 시 이동권 회복
-	bCanFreeAttack = true; // [추가] 턴 시작 시 공격권 회복
-	
-	ABWCharacter* OwnerChar = Cast<ABWCharacter>(GetOwner());
-	if (OwnerChar)
-	{
-		OwnerChar->CurrentMovePoints = OwnerChar->BaseMovePoints;
-		OnMovePointsChanged.Broadcast(OwnerChar->CurrentMovePoints);
-	}
 
-	// 남은 패 버리기
-	for (const FBWCardData& RemainingCard : Hand)
-	{
-		Discard.Add(RemainingCard);
-	}
-	Hand.Empty();
+	// 턴당 한도 초기화 (공격카드 1장, 효과카드 2장, 내가 여는 합 1회)
+	AttackCardsUsedThisTurn = 0;
+	EffectCardsUsedThisTurn = 0;
+	DuelsOpenedThisTurn = 0;
 
-	// 카드 드로우
-	DrawCards(CardsToDrawPerTurn);
+	// [수정] 첫 턴은 InitialHandSize장, 그다음은 턴마다 CardsDrawnPerTurn장 (드로우 덱이 비면 DrawCards가 버린 덱을 섞어 다시 쓴다)
+	DrawCards(TurnCount <= 1 ? InitialHandSize : CardsDrawnPerTurn);
 
-	// 턴 시작 후 최종 패 상태를 UI에 즉시 보고
-	OnHandChanged.Broadcast(Hand);
-	OnAPChanged.Broadcast(CurrentAP, MaxAP);
-
-	UE_LOG(LogTemp, Warning, TEXT("[턴 시작] AP: %d/%d | 드로우: %d장"), CurrentAP, MaxAP, CardsToDrawPerTurn);
+	UE_LOG(LogTemp, Warning, TEXT("[턴 시작] %d턴 | 손패: %d장 | 덱: %d장 | 버린 덱: %d장"), TurnCount, Hand.Num(), Deck.Num(), Discard.Num());
 }
 
 void UDeckComponent::EndTurn()
 {
-	UE_LOG(LogTemp, Warning, TEXT("=== 플레이어 턴 종료 ==="));
-
-	// 상대 턴 행동 처리
-	// 이곳에 적군의 행동 로직(AI)이 들어갈 자리입니다.
-	// 예: EnemyManager->ExecuteEnemyTurn();
-
-	UE_LOG(LogTemp, Warning, TEXT("=== 상대 턴 행동 처리 완료 ==="));
-
-	// 다시 플레이어 턴 시작
-	StartTurn();
+	// [수정] 손패는 그대로 다음 턴으로 이어진다
 }
 
 void UDeckComponent::DrawCards(int32 Count)
@@ -154,12 +125,21 @@ void UDeckComponent::DrawCards(int32 Count)
 		if (Deck.Num() > 0)
 		{
 			FBWCardData DrawnCard = Deck.Pop();
+			if (Hand.Num() >= MaxHandSize)
+			{
+				// [추가] 손패가 가득 차면 뽑은 카드는 바로 버린 덱으로
+				Discard.Add(DrawnCard);
+				UE_LOG(LogTemp, Warning, TEXT("[DeckComponent] Hand full (%d): %s was discarded"), MaxHandSize, *DrawnCard.CardName);
+				OnCardBurned.Broadcast(DrawnCard);
+				continue;
+			}
 			Hand.Add(DrawnCard);
 			UE_LOG(LogTemp, Log, TEXT("[DeckComponent] Card Drawn: %s"), *DrawnCard.CardName);
 		}
 		else
 		{
-			UE_LOG(LogTemp, Error, TEXT("[DeckComponent] CANNOT DRAW: Deck and Discard are both EMPTY!"));
+			// 덱이 손패 크기보다 작으면 정상적으로 생기는 상황이라 Error가 아니다
+			UE_LOG(LogTemp, Log, TEXT("[DeckComponent] No more cards to draw: deck and discard are both empty."));
 			break; 
 		}
 	}
@@ -185,64 +165,50 @@ void UDeckComponent::ShuffleDiscardIntoDeck()
 	UE_LOG(LogTemp, Log, TEXT("[덱 고갈] 무덤 카드를 수거하여 복구 셔플했습니다."));
 }
 
-bool UDeckComponent::UseCard(int32 HandIndex, FBWCardData& OutCardData)
+EBWCardUseResult UDeckComponent::CanUseCard(int32 HandIndex, int32 AvailableMP) const
 {
-	if (!Hand.IsValidIndex(HandIndex)) return false;
+	if (!Hand.IsValidIndex(HandIndex)) return EBWCardUseResult::InvalidIndex;
 
-	int32 CardCost = Hand[HandIndex].APCost; 
-
-	if (CurrentAP >= CardCost)
-	{
-		CurrentAP -= CardCost;
-		OnAPChanged.Broadcast(CurrentAP, MaxAP);
-		OutCardData = Hand[HandIndex];
-		
-		// [추가] 카드 사용 효과음 재생
-		if (OutCardData.CardSound.LoadSynchronous())
-		{
-			UGameplayStatics::PlaySound2D(GetWorld(), OutCardData.CardSound.Get());
-		}
-
-		// [추가] 카드 효과로 이동 포인트 획득
-		if (OutCardData.MovePointsGained > 0)
-		{
-			ABWCharacter* OwnerChar = Cast<ABWCharacter>(GetOwner());
-			if (OwnerChar)
-			{
-				OwnerChar->CurrentMovePoints += OutCardData.MovePointsGained;
-				OnMovePointsChanged.Broadcast(OwnerChar->CurrentMovePoints);
-			}
-		}
-
-		Discard.Add(OutCardData);
-		Hand.RemoveAt(HandIndex);
-
-		OnHandChanged.Broadcast(Hand);
-		UE_LOG(LogTemp, Log, TEXT("[카드 사용] %s 카드를 시전했습니다. 잔여 AP: %d"), *OutCardData.CardName, CurrentAP);
-		return true;
-	}
-
-	UE_LOG(LogTemp, Warning, TEXT("[사용 불가] AP 부족. 현재: %d | 요구: %d"), CurrentAP, CardCost);
-	return false;
+	const FBWCardData& Card = Hand[HandIndex];
+	if (Card.CardKind == ECardKind::Attack && AttackCardsUsedThisTurn >= MaxAttackCardsPerTurn) return EBWCardUseResult::AttackLimit;
+	if (Card.CardKind == ECardKind::Effect && EffectCardsUsedThisTurn >= MaxEffectCardsPerTurn) return EBWCardUseResult::EffectLimit;
+	if (Card.MPCost > AvailableMP) return EBWCardUseResult::NotEnoughMP;
+	return EBWCardUseResult::Ok;
 }
 
-bool UDeckComponent::DiscardCardForBasicAction(int32 HandIndex)
+bool UDeckComponent::HasAttackCardInHand() const
 {
-	if (!Hand.IsValidIndex(HandIndex)) return false;
+	return Hand.ContainsByPredicate([](const FBWCardData& Card) { return Card.CardKind == ECardKind::Attack; });
+}
 
-	int32 ActionCost = 1;
+bool UDeckComponent::UseCard(int32 HandIndex, FBWCardData& OutCardData)
+{
+	ABWCharacter* OwnerChar = Cast<ABWCharacter>(GetOwner());
+	const int32 AvailableMP = OwnerChar ? OwnerChar->CurrentMP : 0;
 
-	if (CurrentAP >= ActionCost)
+	const EBWCardUseResult Check = CanUseCard(HandIndex, AvailableMP);
+	if (Check != EBWCardUseResult::Ok)
 	{
-		CurrentAP -= ActionCost;
-		
-		FBWCardData DiscardedCard = Hand[HandIndex];
-		Discard.Add(DiscardedCard);
-		Hand.RemoveAt(HandIndex);
-
-		OnHandChanged.Broadcast(Hand);
-		UE_LOG(LogTemp, Log, TEXT("[기본 행동] 카드를 소모했습니다. 잔여 AP: %d"), CurrentAP);
-		return true;
+		UE_LOG(LogTemp, Warning, TEXT("[사용 불가] 카드 %d: %s"), HandIndex, *UEnum::GetValueAsString(Check));
+		return false;
 	}
-	return false;
+
+	OutCardData = Hand[HandIndex];
+	if (OutCardData.CardKind == ECardKind::Attack) ++AttackCardsUsedThisTurn;
+	else ++EffectCardsUsedThisTurn;
+	if (OwnerChar) OwnerChar->CurrentMP -= OutCardData.MPCost;
+
+	// 카드 사용 효과음
+	if (GetWorld() && OutCardData.CardSound.LoadSynchronous())
+	{
+		UGameplayStatics::PlaySound2D(GetWorld(), OutCardData.CardSound.Get());
+	}
+
+	Discard.Add(OutCardData);
+	Hand.RemoveAt(HandIndex);
+
+	OnHandChanged.Broadcast(Hand);
+	UE_LOG(LogTemp, Log, TEXT("[카드 사용] %s (공격 %d/%d, 효과 %d/%d)"), *OutCardData.CardName,
+		AttackCardsUsedThisTurn, MaxAttackCardsPerTurn, EffectCardsUsedThisTurn, MaxEffectCardsPerTurn);
+	return true;
 }

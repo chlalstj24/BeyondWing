@@ -1,8 +1,299 @@
 #include "BeyondWing/Core/Public/BWGameInstance.h"
+#include "BeyondWing/Combat/Public/BWAugmentRules.h"
+#include "BeyondWing/Combat/Public/BWDuelRules.h"
+#include "BeyondWing/Core/Public/BWRunSaveGame.h"
+#include "Kismet/GameplayStatics.h"
+#include "Misc/App.h"
+#include "Misc/ConfigCacheIni.h"
 
 UBWGameInstance::UBWGameInstance()
 {
 	ResetStats();
+
+	// 전투 기획서 3장 직업별 속도
+	ClassSpeedDice.Add(EClassType::PHA, FBWDiceRange(3, 6));
+	ClassSpeedDice.Add(EClassType::TEC, FBWDiceRange(3, 7));
+	ClassSpeedDice.Add(EClassType::INT, FBWDiceRange(2, 5));
+	ClassSpeedDice.Add(EClassType::FTH, FBWDiceRange(2, 5));
+	ClassSpeedDice.Add(EClassType::HP,  FBWDiceRange(2, 5));
+
+	ClassDataTable = TSoftObjectPtr<UDataTable>(FSoftObjectPath(TEXT("/Game/HUD/Data/DT_Classes.DT_Classes")));
+}
+
+const FString UBWGameInstance::RunSaveSlot = TEXT("BWRun");
+static const TCHAR* BWSettingsSection = TEXT("/Script/BeyondWing.BWSettings");
+
+void UBWGameInstance::Init()
+{
+	Super::Init();
+	// 저장해 둔 전체 음량을 켜자마자 적용
+	float SavedVolume = 1.0f;
+	if (GConfig && GConfig->GetFloat(BWSettingsSection, TEXT("MasterVolume"), SavedVolume, GGameUserSettingsIni)) SetMasterVolume(SavedVolume, false);
+}
+
+void UBWGameInstance::SetMasterVolume(float Volume, bool bSave)
+{
+	MasterVolume = FMath::Clamp(Volume, 0.0f, 1.0f);
+	FApp::SetVolumeMultiplier(MasterVolume);
+	if (bSave && GConfig)
+	{
+		GConfig->SetFloat(BWSettingsSection, TEXT("MasterVolume"), MasterVolume, GGameUserSettingsIni);
+		GConfig->Flush(false, GGameUserSettingsIni);
+	}
+}
+
+bool UBWGameInstance::SaveRun()
+{
+	UBWRunSaveGame* Save = Cast<UBWRunSaveGame>(UGameplayStatics::CreateSaveGameObject(UBWRunSaveGame::StaticClass()));
+	if (!Save) return false;
+	Save->SavedAt = FDateTime::Now();
+	Save->SelectedClass = SelectedClass;
+	Save->PlayerMaxHP = PlayerMaxHP;
+	Save->PlayerCurrentHP = PlayerCurrentHP;
+	Save->PlayerPHA = PlayerPHA;
+	Save->PlayerTEC = PlayerTEC;
+	Save->PlayerINT = PlayerINT;
+	Save->PlayerFTH = PlayerFTH;
+	Save->PlayerDeckCount = PlayerDeckCount;
+	Save->CurrentStage = CurrentStage;
+	Save->CurrentGold = CurrentGold;
+	Save->OwnedAugments = OwnedAugments;
+	Save->PendingRewards = PendingRewards;
+	Save->CurrentEncounterType = CurrentEncounterType;
+	Save->WorldMapData = WorldMapData;
+	Save->CurrentStep = CurrentStep;
+	Save->CurrentDimIdx = CurrentDimIdx;
+	Save->ConsecutiveCounts = ConsecutiveCounts;
+	Save->NeglectedCounts = NeglectedCounts;
+	const bool bOk = UGameplayStatics::SaveGameToSlot(Save, RunSaveSlot, 0);
+	UE_LOG(LogTemp, Warning, TEXT("[BWSave] Run saved (%s): step %d, HP %d/%d"), bOk ? TEXT("ok") : TEXT("FAILED"), CurrentStep, PlayerCurrentHP, PlayerMaxHP);
+	return bOk;
+}
+
+bool UBWGameInstance::LoadRun()
+{
+	const UBWRunSaveGame* Save = Cast<UBWRunSaveGame>(UGameplayStatics::LoadGameFromSlot(RunSaveSlot, 0));
+	if (!Save || Save->Version != UBWRunSaveGame::CurrentVersion || Save->WorldMapData.Num() == 0) return false;
+	SelectedClass = Save->SelectedClass;
+	PlayerMaxHP = Save->PlayerMaxHP;
+	PlayerCurrentHP = Save->PlayerCurrentHP;
+	PlayerPHA = Save->PlayerPHA;
+	PlayerTEC = Save->PlayerTEC;
+	PlayerINT = Save->PlayerINT;
+	PlayerFTH = Save->PlayerFTH;
+	PlayerDeckCount = Save->PlayerDeckCount;
+	CurrentStage = Save->CurrentStage;
+	CurrentGold = Save->CurrentGold;
+	OwnedAugments = Save->OwnedAugments;
+	PendingRewards = Save->PendingRewards;
+	CurrentEncounterType = Save->CurrentEncounterType;
+	WorldMapData = Save->WorldMapData;
+	CurrentStep = Save->CurrentStep;
+	CurrentDimIdx = Save->CurrentDimIdx;
+	ConsecutiveCounts = Save->ConsecutiveCounts;
+	NeglectedCounts = Save->NeglectedCounts;
+	AugmentChoices.Reset();
+
+	// 칸의 층·차원 번호는 저장되지 않는 값이라 배열 위치로 되살린다
+	for (int32 Step = 0; Step < WorldMapData.Num(); ++Step)
+	{
+		for (int32 Dim = 0; Dim < WorldMapData[Step].Nodes.Num(); ++Dim)
+		{
+			WorldMapData[Step].Nodes[Dim].StepIdx = Step;
+			WorldMapData[Step].Nodes[Dim].DimIdx = Dim;
+		}
+	}
+	UE_LOG(LogTemp, Warning, TEXT("[BWSave] Run loaded: %s, step %d, HP %d/%d"), *UEnum::GetValueAsString(SelectedClass), CurrentStep, PlayerCurrentHP, PlayerMaxHP);
+	return true;
+}
+
+bool UBWGameInstance::HasSavedRun() const
+{
+	return UGameplayStatics::DoesSaveGameExist(RunSaveSlot, 0);
+}
+
+void UBWGameInstance::DeleteSavedRun()
+{
+	if (HasSavedRun()) UGameplayStatics::DeleteGameInSlot(RunSaveSlot, 0);
+}
+
+FText UBWGameInstance::GetSavedRunSummary() const
+{
+	if (!HasSavedRun()) return FText::GetEmpty();
+	const UBWRunSaveGame* Save = Cast<UBWRunSaveGame>(UGameplayStatics::LoadGameFromSlot(RunSaveSlot, 0));
+	if (!Save) return FText::GetEmpty();
+	const FBWClassData* Data = FindClassData(Save->SelectedClass);
+	const FString Name = Data ? Data->DisplayName.ToString() : UEnum::GetDisplayValueAsText(Save->SelectedClass).ToString();
+	const FString Floor = Save->CurrentStep >= 0 ? FString::Printf(TEXT("%d층"), Save->CurrentStep + 1) : FString(TEXT("탑 입구"));
+	return FText::FromString(FString::Printf(TEXT("%s · %s · HP %d/%d"), *Name, *Floor, Save->PlayerCurrentHP, Save->PlayerMaxHP));
+}
+
+const FBWClassData* UBWGameInstance::FindClassData(EClassType ClassType) const
+{
+	const UDataTable* Table = ClassDataTable.LoadSynchronous();
+	if (!Table) return nullptr;
+	for (const TPair<FName, uint8*>& Row : Table->GetRowMap())
+	{
+		const FBWClassData* Data = reinterpret_cast<const FBWClassData*>(Row.Value);
+		if (Data && Data->ClassType == ClassType) return Data;
+	}
+	return nullptr;
+}
+
+bool UBWGameInstance::GetClassData(EClassType ClassType, FBWClassData& OutData) const
+{
+	const FBWClassData* Data = FindClassData(ClassType);
+	if (Data) OutData = *Data;
+	return Data != nullptr;
+}
+
+TArray<FBWClassData> UBWGameInstance::GetAllClassData() const
+{
+	TArray<FBWClassData> Rows;
+	if (const UDataTable* Table = ClassDataTable.LoadSynchronous())
+	{
+		Table->ForeachRow<FBWClassData>(TEXT("Class Rows"), [&Rows](const FName&, const FBWClassData& Row) { Rows.Add(Row); });
+	}
+	return Rows;
+}
+
+FBWDiceRange UBWGameInstance::GetClassSpeedDice(EClassType ClassType) const
+{
+	if (const FBWClassData* Data = FindClassData(ClassType)) return Data->Speed;
+	const FBWDiceRange* Found = ClassSpeedDice.Find(ClassType);
+	return Found ? *Found : FBWDiceRange(3, 6);
+}
+
+FBWClassStartStats UBWGameInstance::GetClassStartStats(EClassType ClassType) const
+{
+	const FBWClassData* Data = FindClassData(ClassType);
+	return Data ? Data->StartStats : UBWDuelRules::MakeClassStartStats(ClassType);
+}
+
+FBWClassCombatProfile UBWGameInstance::GetClassCombatProfile(EClassType ClassType) const
+{
+	const FBWClassData* Data = FindClassData(ClassType);
+	return Data ? Data->Combat : UBWDuelRules::MakeClassProfile(ClassType);
+}
+
+FBWCardData UBWGameInstance::GetClassBasicStrike(EClassType ClassType) const
+{
+	const FBWClassData* Data = FindClassData(ClassType);
+	if (!Data) return UBWDuelRules::MakeBasicStrike(ClassType);
+	FBWCardData Strike = Data->BasicStrike;
+	Strike.CardKind = ECardKind::Attack; // 기본 공격은 언제나 공격
+	Strike.ClassType = ClassType;
+	return Strike;
+}
+
+float UBWGameInstance::GetClassCardPower(EClassType ClassType) const
+{
+	const FBWClassData* Data = FindClassData(ClassType);
+	return Data ? Data->CardPower : UBWDuelRules::MakeClassCardPower(ClassType);
+}
+
+bool UBWGameInstance::GetClassStartingDeck(EClassType ClassType, TArray<FName>& OutCards) const
+{
+	const FBWClassData* Data = FindClassData(ClassType);
+	if (!Data || Data->StartingDeck.Num() == 0) return false;
+	OutCards = Data->StartingDeck;
+	return true;
+}
+
+void UBWGameInstance::BeginNewRun(EClassType ClassType)
+{
+	SelectedClass = ClassType;
+	const FBWClassStartStats Stats = GetClassStartStats(ClassType);
+	PlayerPHA = Stats.PHA;
+	PlayerTEC = Stats.TEC;
+	PlayerINT = Stats.INT;
+	PlayerFTH = Stats.FTH;
+	PlayerMaxHP = Stats.MaxHP;
+	PlayerCurrentHP = Stats.MaxHP;
+
+	CurrentStage = 1;
+	CurrentGold = 0;
+	OwnedAugments.Reset();
+	AugmentChoices.Reset();
+	PendingRewards.Reset();
+	ResetStats();
+	UE_LOG(LogTemp, Warning, TEXT("[BWRun] New run as %s (HP %d, PHA %d TEC %d INT %d FTH %d)"), *UEnum::GetValueAsString(ClassType), PlayerMaxHP, PlayerPHA, PlayerTEC, PlayerINT, PlayerFTH);
+}
+
+void UBWGameInstance::GetAugmentRows(TArray<FName>& OutNames, TArray<FBWAugmentData>& OutRows) const
+{
+	OutNames.Reset();
+	OutRows.Reset();
+	if (!AugmentDataTable) return;
+	AugmentDataTable->ForeachRow<FBWAugmentData>(TEXT("Augment Rows"), [&](const FName& Key, const FBWAugmentData& Row)
+	{
+		OutNames.Add(Key);
+		OutRows.Add(Row);
+	});
+}
+
+const TArray<FName>& UBWGameInstance::BeginAugmentPick(int32 Act, EClassType PlayerClass)
+{
+	if (AugmentRandom.GetInitialSeed() == 0) AugmentRandom.Initialize(FMath::Rand());
+
+	AugmentPickAct = Act;
+	AugmentPickClass = PlayerClass;
+	AugmentRerollsLeft = UBWAugmentRules::RerollsPerPick;
+
+	TArray<FName> Names;
+	TArray<FBWAugmentData> Rows;
+	GetAugmentRows(Names, Rows);
+	AugmentChoices = UBWAugmentRules::PickCandidates(Names, Rows, Act, PlayerClass, OwnedAugments, {}, UBWAugmentRules::ChoicesPerPick, AugmentRandom);
+
+	UE_LOG(LogTemp, Warning, TEXT("[BWAugment] Act %d picks: %s"), Act, *FString::JoinBy(AugmentChoices, TEXT(", "), [](const FName& N) { return N.ToString(); }));
+	return AugmentChoices;
+}
+
+bool UBWGameInstance::RerollAugmentChoices()
+{
+	if (AugmentRerollsLeft <= 0 || AugmentChoices.Num() == 0) return false;
+	--AugmentRerollsLeft;
+
+	TArray<FName> Names;
+	TArray<FBWAugmentData> Rows;
+	GetAugmentRows(Names, Rows);
+	const TArray<FName> Previous = AugmentChoices;
+	AugmentChoices = UBWAugmentRules::PickCandidates(Names, Rows, AugmentPickAct, AugmentPickClass, OwnedAugments, Previous, UBWAugmentRules::ChoicesPerPick, AugmentRandom);
+
+	UE_LOG(LogTemp, Warning, TEXT("[BWAugment] Reroll: %s"), *FString::JoinBy(AugmentChoices, TEXT(", "), [](const FName& N) { return N.ToString(); }));
+	return true;
+}
+
+bool UBWGameInstance::ChooseAugment(int32 ChoiceIndex)
+{
+	if (!AugmentChoices.IsValidIndex(ChoiceIndex)) return false;
+	OwnedAugments.Add(AugmentChoices[ChoiceIndex]);
+	UE_LOG(LogTemp, Warning, TEXT("[BWAugment] Chose %s (owned %d)"), *AugmentChoices[ChoiceIndex].ToString(), OwnedAugments.Num());
+	AugmentChoices.Reset();
+	AugmentRerollsLeft = 0;
+	return true;
+}
+
+bool UBWGameInstance::GetAugmentData(FName RowName, FBWAugmentData& OutData) const
+{
+	if (!AugmentDataTable) return false;
+	if (const FBWAugmentData* Row = AugmentDataTable->FindRow<FBWAugmentData>(RowName, TEXT("Augment Lookup"), false))
+	{
+		OutData = *Row;
+		return true;
+	}
+	return false;
+}
+
+TArray<FBWAugmentData> UBWGameInstance::GetOwnedAugmentData() const
+{
+	TArray<FBWAugmentData> Result;
+	for (const FName& Name : OwnedAugments)
+	{
+		FBWAugmentData Data;
+		if (GetAugmentData(Name, Data)) Result.Add(Data);
+	}
+	return Result;
 }
 
 void UBWGameInstance::GenerateCombatRewards(EMapNodeType EncounterType)
@@ -98,6 +389,7 @@ FName UBWGameInstance::FindEnemyIDByDisplayName(FString DisplayName)
 void UBWGameInstance::PrepareEncounter(EMapNodeType Type, EDimensionType Dim)
 {
 	PendingEnemyRequests.Empty();
+	PendingWallTiles.Empty();
 	CurrentEncounterType = Type; // 보상 생성을 위해 저장
 
 	if (!EncounterDataTable) 
@@ -142,6 +434,8 @@ void UBWGameInstance::PrepareEncounter(EMapNodeType Type, EDimensionType Dim)
 			break;
 		}
 	}
+
+	PendingWallTiles = ChosenEncounter->WallTiles;
 
 	// 3. 선택된 조합의 몬스터들을 스폰 목록에 추가
 	for (const FEnemyPositionInfo& PosInfo : ChosenEncounter->EnemyGroup)
