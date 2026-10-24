@@ -359,14 +359,18 @@ void ABWPlayerController::InitBattlefieldFromGameInstance()
 	// 지금 서 있는 차원 줄의 기믹. 연속 체류 4턴 이상이면 과부하 (지도 기획서 7-1)
 	EDimensionType Dimension = EDimensionType::None;
 	bool bOverloaded = false;
-	if (UBWGameInstance* GI = Cast<UBWGameInstance>(GetGameInstance()))
+	float BonusDamage = 0.0f;
+	UBWGameInstance* GI = Cast<UBWGameInstance>(GetGameInstance());
+	if (GI)
 	{
-		if (GI->CurrentDimIdx >= 0 && GI->CurrentDimIdx < 4) Dimension = (EDimensionType)(GI->CurrentDimIdx + 1);
-		int32 Consecutive = 0, Neglected = 0;
-		GI->GetCountryStats(Dimension, Consecutive, Neglected);
-		bOverloaded = Consecutive >= 4;
+		// [수정] 2·3막은 줄 순서가 섞이므로 줄 번호가 아니라 그 줄의 차원을 쓴다
+		Dimension = GI->GetCurrentDimension();
+		bOverloaded = GI->GetCurrentOverloadLevel() >= 1;
+		BonusDamage = GI->ConsumeNextBattleDamageBonus(); // 겔레온 방치 보너스: 이번 전투 1회
 	}
 	SetBattlefield(Dimension, bOverloaded);
+	Battlefield.BonusDamage = BonusDamage;
+	if (BonusDamage > 0.0f) UE_LOG(LogTemp, Warning, TEXT("[BWCombat] Map bonus: damage +%.0f%% this battle"), BonusDamage * 100.0f);
 }
 
 bool ABWPlayerController::ChooseGeleonMode(bool bUseEffects)

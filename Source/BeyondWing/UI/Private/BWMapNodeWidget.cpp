@@ -1,5 +1,7 @@
 #include "BeyondWing/UI/Public/BWMapNodeWidget.h"
+#include "BeyondWing/UI/Public/BWMapWidget.h"
 #include "BeyondWing/Core/Public/BWGameInstance.h"
+#include "BeyondWing/Core/Public/BWMapRules.h"
 #include "Kismet/GameplayStatics.h"
 
 void UBWMapNodeWidget::InitNode(const FMapNode& InData)
@@ -29,8 +31,7 @@ void UBWMapNodeWidget::InitNode(const FMapNode& InData)
 
 		if (bIsHidden)
 		{
-			bool bIsFixed = (NodeData.StepIdx == 8 || NodeData.StepIdx == 13 || NodeData.StepIdx == 14);
-			FinalOpacity = bIsFixed ? 0.1f : 0.0f; 
+			FinalOpacity = 0.0f;
 			FinalTint = FLinearColor(0.5f, 0.5f, 0.5f, 1.0f);
 		}
 		else if (NodeData.bIsVisited)
@@ -54,27 +55,9 @@ void UBWMapNodeWidget::InitNode(const FMapNode& InData)
 
 void UBWMapNodeWidget::HandleClick()
 {
-	UBWGameInstance* GI = Cast<UBWGameInstance>(GetGameInstance());
-	if (GI && GI->CanMoveToNode(NodeData.StepIdx, NodeData.DimIdx))
+	// [수정] 이동·도착 처리(차원문 → 방치 보너스 → 과부하 → 노드 진입)는 지도 화면이 한다
+	if (UBWMapWidget* Map = GetTypedOuter<UBWMapWidget>())
 	{
-		// 1. 인카운터 데이터 준비 (랜덤 주사위 굴리기)
-		GI->PrepareEncounter(NodeData.NodeType, NodeData.Dimension);
-
-		// 2. 맵 노드 상태 업데이트
-		GI->SelectMapNode(NodeData.StepIdx, NodeData.DimIdx);
-		
-		FString TargetLevelName = TEXT("BattleLevel");
-		switch (NodeData.Dimension)
-		{
-		case EDimensionType::Patrovas: TargetLevelName = TEXT("Level_Patrovas"); break;
-		case EDimensionType::Berend:   TargetLevelName = TEXT("Level_Berend"); break;
-		case EDimensionType::Geleon:   TargetLevelName = TEXT("Level_Geleon"); break;
-		case EDimensionType::Taiga:    TargetLevelName = TEXT("Level_Taiga"); break;
-		default: break;
-		}
-
-		if (NodeData.NodeType == EMapNodeType::Boss) TargetLevelName = TEXT("Level_Boss");
-
-		UGameplayStatics::OpenLevel(GetWorld(), FName(*TargetLevelName));
+		Map->TryMoveTo(NodeData.StepIdx, NodeData.DimIdx);
 	}
 }

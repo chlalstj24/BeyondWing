@@ -2,6 +2,7 @@
 #include "BeyondWing/Combat/Public/BWAugmentRules.h"
 #include "BeyondWing/Combat/Public/BWDuelRules.h"
 #include "BeyondWing/Core/Public/BWRunSaveGame.h"
+#include "BeyondWing/Core/Public/BWMapRules.h"
 #include "Kismet/GameplayStatics.h"
 #include "Misc/App.h"
 #include "Misc/ConfigCacheIni.h"
@@ -18,6 +19,7 @@ UBWGameInstance::UBWGameInstance()
 	ClassSpeedDice.Add(EClassType::HP,  FBWDiceRange(2, 5));
 
 	ClassDataTable = TSoftObjectPtr<UDataTable>(FSoftObjectPath(TEXT("/Game/HUD/Data/DT_Classes.DT_Classes")));
+	CardDataTable = TSoftObjectPtr<UDataTable>(FSoftObjectPath(TEXT("/Game/HUD/Data/BeyondWing_CardDatabase_Template.BeyondWing_CardDatabase_Template")));
 }
 
 const FString UBWGameInstance::RunSaveSlot = TEXT("BWRun");
@@ -65,6 +67,15 @@ bool UBWGameInstance::SaveRun()
 	Save->CurrentDimIdx = CurrentDimIdx;
 	Save->ConsecutiveCounts = ConsecutiveCounts;
 	Save->NeglectedCounts = NeglectedCounts;
+	Save->RowDimensions = RowDimensions;
+	Save->bRiftJumpReady = bRiftJumpReady;
+	Save->BonusClaimCounts = BonusClaimCounts;
+	Save->MapBonus = MapBonus;
+	Save->PendingCardRemovals = PendingCardRemovals;
+	Save->bActCleared = bActCleared;
+	Save->AugmentPickedAct = AugmentPickedAct;
+	Save->RunDeck = RunDeck;
+	Save->MapUsedCards = MapUsedCards;
 	const bool bOk = UGameplayStatics::SaveGameToSlot(Save, RunSaveSlot, 0);
 	UE_LOG(LogTemp, Warning, TEXT("[BWSave] Run saved (%s): step %d, HP %d/%d"), bOk ? TEXT("ok") : TEXT("FAILED"), CurrentStep, PlayerCurrentHP, PlayerMaxHP);
 	return bOk;
@@ -92,24 +103,28 @@ bool UBWGameInstance::LoadRun()
 	CurrentDimIdx = Save->CurrentDimIdx;
 	ConsecutiveCounts = Save->ConsecutiveCounts;
 	NeglectedCounts = Save->NeglectedCounts;
+	RowDimensions = Save->RowDimensions;
+	bRiftJumpReady = Save->bRiftJumpReady;
+	BonusClaimCounts = Save->BonusClaimCounts;
+	MapBonus = Save->MapBonus;
+	PendingCardRemovals = Save->PendingCardRemovals;
+	bActCleared = Save->bActCleared;
+	AugmentPickedAct = Save->AugmentPickedAct;
+	RunDeck = Save->RunDeck;
+	MapUsedCards = Save->MapUsedCards;
+	PlayerDeckCount = RunDeck.Num() > 0 ? RunDeck.Num() : PlayerDeckCount;
 	AugmentChoices.Reset();
-
-	// 칸의 층·차원 번호는 저장되지 않는 값이라 배열 위치로 되살린다
-	for (int32 Step = 0; Step < WorldMapData.Num(); ++Step)
-	{
-		for (int32 Dim = 0; Dim < WorldMapData[Step].Nodes.Num(); ++Dim)
-		{
-			WorldMapData[Step].Nodes[Dim].StepIdx = Step;
-			WorldMapData[Step].Nodes[Dim].DimIdx = Dim;
-		}
-	}
+	LastArrival = FBWArrivalReport();
 	UE_LOG(LogTemp, Warning, TEXT("[BWSave] Run loaded: %s, step %d, HP %d/%d"), *UEnum::GetValueAsString(SelectedClass), CurrentStep, PlayerCurrentHP, PlayerMaxHP);
 	return true;
 }
 
 bool UBWGameInstance::HasSavedRun() const
 {
-	return UGameplayStatics::DoesSaveGameExist(RunSaveSlot, 0);
+	if (!UGameplayStatics::DoesSaveGameExist(RunSaveSlot, 0)) return false;
+	// 옛 형식(지도 구조가 다른 저장)은 이어할 수 없으니 없는 것으로 본다
+	const UBWRunSaveGame* Save = Cast<UBWRunSaveGame>(UGameplayStatics::LoadGameFromSlot(RunSaveSlot, 0));
+	return Save && Save->Version == UBWRunSaveGame::CurrentVersion;
 }
 
 void UBWGameInstance::DeleteSavedRun()
@@ -124,7 +139,9 @@ FText UBWGameInstance::GetSavedRunSummary() const
 	if (!Save) return FText::GetEmpty();
 	const FBWClassData* Data = FindClassData(Save->SelectedClass);
 	const FString Name = Data ? Data->DisplayName.ToString() : UEnum::GetDisplayValueAsText(Save->SelectedClass).ToString();
-	const FString Floor = Save->CurrentStep >= 0 ? FString::Printf(TEXT("%d층"), Save->CurrentStep + 1) : FString(TEXT("탑 입구"));
+	const FString Floor = Save->CurrentStep >= UBWMapRules::BossStep ? FString::Printf(TEXT("%d막 보스"), Save->CurrentStage)
+		: Save->CurrentStep >= 0 ? FString::Printf(TEXT("%d막 %d칸"), Save->CurrentStage, Save->CurrentStep + 1)
+		: FString::Printf(TEXT("%d막 시작"), Save->CurrentStage);
 	return FText::FromString(FString::Printf(TEXT("%s · %s · HP %d/%d"), *Name, *Floor, Save->PlayerCurrentHP, Save->PlayerMaxHP));
 }
 
@@ -216,7 +233,22 @@ void UBWGameInstance::BeginNewRun(EClassType ClassType)
 	OwnedAugments.Reset();
 	AugmentChoices.Reset();
 	PendingRewards.Reset();
+	PendingCardRemovals = 0;
+	bActCleared = false;
+	AugmentPickedAct = 0;
+	WorldMapData.Reset();
+	CurrentStep = -1;
+	CurrentDimIdx = -1;
 	ResetStats();
+
+	// 판 덱은 그 삶의 방식의 시작 덱에서 출발한다 (표에 덱이 없으면 비워 두고 덱 컴포넌트의 직업별 배열을 쓴다)
+	RunDeck.Reset();
+	TArray<FName> StartCards;
+	if (GetClassStartingDeck(ClassType, StartCards))
+	{
+		for (const FName& Row : StartCards) RunDeck.Add(FBWRunCard(Row));
+	}
+	PlayerDeckCount = RunDeck.Num() > 0 ? RunDeck.Num() : PlayerDeckCount;
 	UE_LOG(LogTemp, Warning, TEXT("[BWRun] New run as %s (HP %d, PHA %d TEC %d INT %d FTH %d)"), *UEnum::GetValueAsString(ClassType), PlayerMaxHP, PlayerPHA, PlayerTEC, PlayerINT, PlayerFTH);
 }
 
@@ -296,75 +328,228 @@ TArray<FBWAugmentData> UBWGameInstance::GetOwnedAugmentData() const
 	return Result;
 }
 
+FRandomStream& UBWGameInstance::GetMapRandom()
+{
+	if (MapRandom.GetInitialSeed() == 0) MapRandom.Initialize(FMath::Rand() | 1);
+	return MapRandom;
+}
+
+static FRewardItem MakeGoldReward(int32 Amount, const FString& Why)
+{
+	FRewardItem Gold;
+	Gold.Type = ERewardType::Gold;
+	Gold.Amount = Amount;
+	Gold.RewardName = FString::Printf(TEXT("골드 %d"), Amount);
+	Gold.Description = Why;
+	return Gold;
+}
+
+TArray<FName> UBWGameInstance::RollCardChoices(int32 Count)
+{
+	TArray<FName> Pool;
+	if (const UDataTable* Table = CardDataTable.LoadSynchronous())
+	{
+		Table->ForeachRow<FBWCardData>(TEXT("Card Reward Pool"), [&](const FName& Key, const FBWCardData& Card)
+		{
+			if (Card.ClassType == SelectedClass || Card.ClassType == EClassType::Common) Pool.Add(Key);
+		});
+	}
+	TArray<FName> Picked;
+	FRandomStream& Stream = GetMapRandom();
+	while (Picked.Num() < Count && Pool.Num() > 0)
+	{
+		Picked.Add(Pool[Stream.RandRange(0, Pool.Num() - 1)]);
+		Pool.Remove(Picked.Last());
+	}
+	return Picked;
+}
+
+FRewardItem UBWGameInstance::MakeCardReward()
+{
+	FRewardItem Reward;
+	Reward.Type = ERewardType::CardSelection;
+
+	// 파트로바스 방치 보너스: 강화 카드 n장 + 일반 m장 (내성 반영). 없으면 일반 3장
+	int32 Upgraded = 0, Total = 3;
+	if (MapBonus.UpgradedCardChoices + MapBonus.NormalCardChoices > 0)
+	{
+		Upgraded = MapBonus.UpgradedCardChoices;
+		Total = MapBonus.UpgradedCardChoices + MapBonus.NormalCardChoices;
+		MapBonus.UpgradedCardChoices = 0;
+		MapBonus.NormalCardChoices = 0;
+	}
+	// 과부하 II: 카드 보상 선택지 한 장 줄어듦 (3 → 2)
+	if (GetCurrentOverloadLevel() >= 2) Total = FMath::Max(1, Total - 1);
+	Upgraded = FMath::Min(Upgraded, Total);
+
+	Reward.CardChoices = RollCardChoices(Total);
+	Reward.UpgradedChoices = FMath::Min(Upgraded, Reward.CardChoices.Num());
+	Reward.RewardName = Reward.UpgradedChoices > 0 ? FString::Printf(TEXT("카드 %d장 중 1장 (강화 %d장)"), Reward.CardChoices.Num(), Reward.UpgradedChoices)
+		: FString::Printf(TEXT("카드 %d장 중 1장"), Reward.CardChoices.Num());
+	return Reward;
+}
+
 void UBWGameInstance::GenerateCombatRewards(EMapNodeType EncounterType)
 {
 	PendingRewards.Empty();
 
-	// 1. 기본 골드 보상 (EncounterType에 따라 차등)
-	FRewardItem GoldReward;
-	GoldReward.Type = ERewardType::Gold;
-	GoldReward.Amount = FMath::RandRange(20, 40);
-	if (EncounterType == EMapNodeType::Elite) GoldReward.Amount *= 2;
-	else if (EncounterType == EMapNodeType::Boss) GoldReward.Amount *= 5;
-	GoldReward.RewardName = FString::Printf(TEXT("%d Gold"), GoldReward.Amount);
-	PendingRewards.Add(GoldReward);
+	// 1. 골드 (엘리트 2배, 보스 5배) — 바로 받는다
+	int32 Gold = GetMapRandom().RandRange(20, 40);
+	if (EncounterType == EMapNodeType::Elite) Gold *= 2;
+	else if (EncounterType == EMapNodeType::Boss) Gold *= 5;
+	PendingRewards.Add(MakeGoldReward(Gold, TEXT("전투 승리")));
 
-	// 2. 카드 선택 보상 (상자나 모닥불 아니면 기본 제공)
-	if (EncounterType == EMapNodeType::Battle || EncounterType == EMapNodeType::Elite || EncounterType == EMapNodeType::Boss)
-	{
-		FRewardItem CardReward;
-		CardReward.Type = ERewardType::CardSelection;
-		CardReward.RewardName = TEXT("Add a Card to Deck");
-		
-		// [파트로바스 방치 효과] 보상이 강화된 채 등장
-		if (NeglectedCounts[EDimensionType::Patrovas] >= 3)
-		{
-			CardReward.RewardName = TEXT("Add an ENHANCED Card to Deck");
-		}
-		PendingRewards.Add(CardReward);
-	}
-
-	// 3. [국가별 방치 특수 보상 주입]
-	EDimensionType CurrentDimension = (EDimensionType)(CurrentDimIdx + 1);
-	
-	// 타이가 방치 2턴 이상: 카드 삭제 2회 + 장비
-	if (CurrentDimension == EDimensionType::Taiga && NeglectedCounts[EDimensionType::Taiga] >= 2)
-	{
-		FRewardItem Removal;
-		Removal.Type = ERewardType::CardRemoval;
-		Removal.RewardName = TEXT("Remove 2 Basic Cards");
-		PendingRewards.Add(Removal);
-
-		FRewardItem Equip;
-		Equip.Type = ERewardType::Equipment;
-		Equip.RewardName = TEXT("Legendary Equipment");
-		PendingRewards.Add(Equip);
-	}
-
-	// 베렌드 방치 3턴 이상: HP 20% 회복
-	if (CurrentDimension == EDimensionType::Berend && NeglectedCounts[EDimensionType::Berend] >= 3)
+	// 2. 베렌드 방치 보너스: 도착 후 첫 승리에 HP 회복 (1회)
+	if (MapBonus.VictoryHealFraction > 0.0f)
 	{
 		FRewardItem Heal;
 		Heal.Type = ERewardType::Heal;
-		Heal.Amount = 20; // 20%
-		Heal.RewardName = TEXT("Northern Primal Healing (20% HP)");
+		Heal.Amount = FMath::Max(1, FMath::RoundToInt(PlayerMaxHP * MapBonus.VictoryHealFraction));
+		Heal.RewardName = FString::Printf(TEXT("HP %d 회복"), Heal.Amount);
+		Heal.Description = FString::Printf(TEXT("베렌드 방치 보너스 (최대 HP %d%%)"), FMath::RoundToInt(MapBonus.VictoryHealFraction * 100.0f));
 		PendingRewards.Add(Heal);
+		MapBonus.VictoryHealFraction = 0.0f;
 	}
 
-	UE_LOG(LogTemp, Warning, TEXT("[BWReward] %d Rewards Generated for Encounter: %d"), PendingRewards.Num(), (uint8)EncounterType);
+	// 3. 타이가 방치 보너스: 다음 전투 보상에 장비 (장비 시스템은 아직 없어 표시만)
+	if (MapBonus.EquipmentGrade > 0)
+	{
+		FRewardItem Equip;
+		Equip.Type = ERewardType::Equipment;
+		Equip.Amount = MapBonus.EquipmentGrade;
+		Equip.RewardName = MapBonus.EquipmentGrade >= 2 ? TEXT("전설 장비") : TEXT("희귀 이상 장비");
+		Equip.Description = TEXT("타이가 방치 보너스 · 장비 시스템 준비 중이라 아직 효과 없음");
+		PendingRewards.Add(Equip);
+		MapBonus.EquipmentGrade = 0;
+	}
+
+	// 4. 카드 보상 (3장 중 1장, 파트로바스 보너스·과부하 II 반영)
+	PendingRewards.Add(MakeCardReward());
+
+	// 골드·회복은 바로 적용해 두고, 목록은 지도 화면이 보여 준 뒤 비운다
+	for (int32 i = 0; i < PendingRewards.Num(); ++i)
+	{
+		if (PendingRewards[i].Type == ERewardType::Gold) CurrentGold += PendingRewards[i].Amount;
+		else if (PendingRewards[i].Type == ERewardType::Heal) HealPlayer(PendingRewards[i].Amount);
+	}
+	UE_LOG(LogTemp, Warning, TEXT("[BWReward] %d rewards for %s (gold now %d)"), PendingRewards.Num(), *UEnum::GetValueAsString(EncounterType), CurrentGold);
+}
+
+void UBWGameInstance::GenerateTreasureRewards()
+{
+	PendingRewards.Empty();
+	const int32 Gold = GetMapRandom().RandRange(50, 80);
+	PendingRewards.Add(MakeGoldReward(Gold, TEXT("보물 상자")));
+	CurrentGold += Gold;
+	PendingRewards.Add(MakeCardReward());
+}
+
+void UBWGameInstance::OnBattleWon()
+{
+	GenerateCombatRewards(CurrentEncounterType);
+	if (CurrentEncounterType == EMapNodeType::Boss) bActCleared = true;
+	SaveRun();
 }
 
 void UBWGameInstance::ClaimReward(int32 Index)
 {
 	if (!PendingRewards.IsValidIndex(Index)) return;
-
-	FRewardItem Reward = PendingRewards[Index];
-	
-	// 여기서 실제 골드 추가, 카드 덱 수정 등의 로직 호출
+	const FRewardItem Reward = PendingRewards[Index];
+	// 골드·회복은 보상을 만들 때 이미 적용했다. 카드 보상을 그냥 받으면 건너뛴 것으로 본다
 	UE_LOG(LogTemp, Log, TEXT("[BWReward] Claimed: %s"), *Reward.RewardName);
-
-	// 수령한 보상은 목록에서 제거
 	PendingRewards.RemoveAt(Index);
+}
+
+void UBWGameInstance::ChooseRewardCard(int32 RewardIndex, int32 ChoiceIndex)
+{
+	if (!PendingRewards.IsValidIndex(RewardIndex)) return;
+	const FRewardItem Reward = PendingRewards[RewardIndex];
+	PendingRewards.RemoveAt(RewardIndex);
+	if (Reward.Type != ERewardType::CardSelection || !Reward.CardChoices.IsValidIndex(ChoiceIndex)) return;
+	AddRunCard(Reward.CardChoices[ChoiceIndex], ChoiceIndex < Reward.UpgradedChoices);
+}
+
+bool UBWGameInstance::GetCardData(FName Row, bool bUpgraded, FBWCardData& OutCard) const
+{
+	const UDataTable* Table = CardDataTable.LoadSynchronous();
+	const FBWCardData* Found = Table ? Table->FindRow<FBWCardData>(Row, TEXT("Run Deck"), false) : nullptr;
+	if (!Found) return false;
+	OutCard = bUpgraded ? UBWMapRules::MakeUpgradedCard(*Found) : *Found;
+	return true;
+}
+
+TArray<FBWCardData> UBWGameInstance::GetRunDeckCards() const
+{
+	TArray<FBWCardData> Cards;
+	for (const FBWRunCard& Entry : RunDeck)
+	{
+		FBWCardData Card;
+		if (GetCardData(Entry.Row, Entry.bUpgraded, Card)) Cards.Add(Card);
+	}
+	return Cards;
+}
+
+void UBWGameInstance::AddRunCard(FName Row, bool bUpgraded)
+{
+	RunDeck.Add(FBWRunCard(Row, bUpgraded));
+	PlayerDeckCount = RunDeck.Num();
+	UE_LOG(LogTemp, Warning, TEXT("[BWDeck] Added %s%s (deck %d)"), *Row.ToString(), bUpgraded ? TEXT("+") : TEXT(""), RunDeck.Num());
+}
+
+bool UBWGameInstance::RemoveRunCard(int32 DeckIndex)
+{
+	if (!RunDeck.IsValidIndex(DeckIndex) || RunDeck.Num() <= 1) return false;
+	UE_LOG(LogTemp, Warning, TEXT("[BWDeck] Removed %s"), *RunDeck[DeckIndex].Row.ToString());
+	RunDeck.RemoveAt(DeckIndex);
+	PlayerDeckCount = RunDeck.Num();
+	return true;
+}
+
+bool UBWGameInstance::UpgradeRunCard(int32 DeckIndex)
+{
+	if (!RunDeck.IsValidIndex(DeckIndex) || RunDeck[DeckIndex].bUpgraded) return false;
+	RunDeck[DeckIndex].bUpgraded = true;
+	UE_LOG(LogTemp, Warning, TEXT("[BWDeck] Upgraded %s"), *RunDeck[DeckIndex].Row.ToString());
+	return true;
+}
+
+bool UBWGameInstance::CanUseCardOnMap(int32 DeckIndex, FString& OutReason) const
+{
+	FBWCardData Card;
+	if (!RunDeck.IsValidIndex(DeckIndex) || !GetCardData(RunDeck[DeckIndex].Row, RunDeck[DeckIndex].bUpgraded, Card)) { OutReason = TEXT("카드 없음"); return false; }
+	if (Card.CardKind != ECardKind::Effect) { OutReason = TEXT("공격카드는 전투에서만"); return false; }
+	if (Card.EffectHeal <= 0) { OutReason = TEXT("전투에서만 의미 있는 효과"); return false; }
+	if (MapUsedCards.Contains(RunDeck[DeckIndex].Row)) { OutReason = TEXT("이번 막에 이미 씀"); return false; }
+	if (PlayerCurrentHP >= PlayerMaxHP) { OutReason = TEXT("HP가 가득 참"); return false; }
+	OutReason.Reset();
+	return true;
+}
+
+bool UBWGameInstance::UseCardOnMap(int32 DeckIndex)
+{
+	FString Reason;
+	if (!CanUseCardOnMap(DeckIndex, Reason)) return false;
+	FBWCardData Card;
+	GetCardData(RunDeck[DeckIndex].Row, RunDeck[DeckIndex].bUpgraded, Card);
+	HealPlayer(Card.EffectHeal);
+	MapUsedCards.Add(RunDeck[DeckIndex].Row); // 같은 카드(같은 행)는 막당 1회
+	UE_LOG(LogTemp, Warning, TEXT("[BWMap] Used %s on the map: HP +%d -> %d/%d"), *Card.CardName, Card.EffectHeal, PlayerCurrentHP, PlayerMaxHP);
+	return true;
+}
+
+int32 UBWGameInstance::GetRestHealAmount() const
+{
+	return FMath::Max(1, FMath::RoundToInt(PlayerMaxHP * RestHealFraction));
+}
+
+void UBWGameInstance::RestHeal()
+{
+	HealPlayer(GetRestHealAmount());
+}
+
+void UBWGameInstance::HealPlayer(int32 Amount)
+{
+	PlayerCurrentHP = FMath::Clamp(PlayerCurrentHP + FMath::Max(0, Amount), 1, PlayerMaxHP);
 }
 
 FName UBWGameInstance::FindEnemyIDByDisplayName(FString DisplayName)
@@ -402,17 +587,26 @@ void UBWGameInstance::PrepareEncounter(EMapNodeType Type, EDimensionType Dim)
 	float TotalWeight = 0.0f;
 
 	// 1. 현재 단계(Stage), 차원(Dimension), 타입(Battle/Elite/Boss)에 맞는 후보 필터링
+	// [수정] 맞는 조합이 없으면 막 조건 → 종류 조건 순서로 풀어서 찾는다 (엘리트·보스·2·3막 조합이 아직 표에 없을 때)
 	static const FString ContextString(TEXT("Encounter Filter Context"));
-	EncounterDataTable->ForeachRow<FEncounterData>(ContextString, [&](const FName& Key, const FEncounterData& Row) {
-		// [수정] 차원이 정확히 일치하거나, None(공통)인 경우 모두 후보에 포함
-		bool bDimMatch = (Row.Dimension == Dim || Row.Dimension == EDimensionType::None);
-		
-		if (Row.Stage == CurrentStage && bDimMatch && Row.EncounterType == Type)
-		{
-			EligibleEncounters.Add(const_cast<FEncounterData*>(&Row));
-			TotalWeight += Row.Weight;
-		}
-	});
+	auto Collect = [&](bool bMatchStage, bool bMatchType)
+	{
+		EncounterDataTable->ForeachRow<FEncounterData>(ContextString, [&](const FName& Key, const FEncounterData& Row) {
+			// [수정] 차원이 정확히 일치하거나, None(공통)인 경우 모두 후보에 포함
+			bool bDimMatch = (Row.Dimension == Dim || Row.Dimension == EDimensionType::None);
+			const bool bStageOk = !bMatchStage || Row.Stage == CurrentStage;
+			const bool bTypeOk = bMatchType ? Row.EncounterType == Type : Row.EncounterType == EMapNodeType::Battle;
+			if (bStageOk && bDimMatch && bTypeOk)
+			{
+				EligibleEncounters.Add(const_cast<FEncounterData*>(&Row));
+				TotalWeight += Row.Weight;
+			}
+		});
+	};
+	Collect(true, true);
+	if (EligibleEncounters.Num() == 0) Collect(false, true);
+	if (EligibleEncounters.Num() == 0) Collect(true, false);
+	if (EligibleEncounters.Num() == 0) Collect(false, false);
 
 	if (EligibleEncounters.Num() == 0)
 	{
@@ -462,155 +656,206 @@ void UBWGameInstance::ResetStats()
 {
 	ConsecutiveCounts.Empty();
 	NeglectedCounts.Empty();
+	BonusClaimCounts.Empty();
 
-	// 4개 국가 초기화 (1: Patrovas, 2: Geleon, 3: Berend, 4: Taiga)
+	// 4개 국가 초기화 (막 시작 시 모두 0)
 	for (int32 i = 1; i <= 4; ++i)
 	{
 		EDimensionType Dim = (EDimensionType)i;
 		ConsecutiveCounts.Add(Dim, 0);
 		NeglectedCounts.Add(Dim, 0);
+		BonusClaimCounts.Add(Dim, 0);
 	}
+	MapBonus = FBWMapBonusState();
+	bRiftJumpReady = false;
+	LastArrival = FBWArrivalReport();
+	MapUsedCards.Reset();
 }
 
 void UBWGameInstance::GenerateWorldMap(int32 TotalSteps)
 {
-	WorldMapData.Empty();
+	// 막 길이는 기획(15칸 + 보스)으로 고정. TotalSteps는 옛 블루프린트 호출 호환용
+	CurrentStage = FMath::Clamp(CurrentStage, 1, UBWMapRules::NumActs);
 	CurrentStep = -1;
 	CurrentDimIdx = -1;
-	ResetStats();
+	bActCleared = false;
+	ResetStats(); // 방치·연속·내성·받아 둔 보너스는 다음 막으로 이월되지 않는다
 
-	// 고정 값: 15층으로 강제 (기획상 15층이 마지막)
-	int32 MapLength = 15;
+	FRandomStream& Stream = GetMapRandom();
+	RowDimensions = UBWMapRules::MakeRowOrder(CurrentStage, bShuffleRowsAfterFirstAct, Stream);
+	WorldMapData = UBWMapRules::GenerateAct(RowDimensions, Stream);
 
-	for (int32 i = 0; i < MapLength; ++i)
-	{
-		FMapStep NewStep;
-		for (int32 dim = 0; dim < 4; ++dim)
-		{
-			FMapNode Node;
-			Node.StepIdx = i;
-			Node.DimIdx = dim;
-			Node.Dimension = (EDimensionType)(dim + 1);
+	UE_LOG(LogTemp, Warning, TEXT("[BWMap] Act %d generated: rows %s"), CurrentStage,
+		*FString::JoinBy(RowDimensions, TEXT(", "), [](EDimensionType D) { return UBWMapRules::GetDimensionName(D).ToString(); }));
+}
 
-			// --- [기획 규칙 1] 고정 층수 설정 ---
-			if (i == 0)             Node.NodeType = EMapNodeType::Battle; // 1층: 일반몹
-			else if (i == 8)        Node.NodeType = EMapNodeType::Chest;  // 9층: 상자
-			else if (i == 13)       Node.NodeType = EMapNodeType::Rest;   // 14층: 모닥불
-			else if (i == 14)       Node.NodeType = EMapNodeType::Boss;   // 15층: 보스
-			
-			// --- [기획 규칙 2] 나머지 층 확률 생성 ---
-			else
-			{
-				int32 Rand = FMath::RandRange(0, 99);
-				
-				// 첫 5개층(0~4 index)에서는 엘리트 등장 불가 (0%)
-				int32 EliteChance = (i < 5) ? 0 : 8;
+bool UBWGameInstance::IsBossStep(int32 Step) const
+{
+	return Step == UBWMapRules::BossStep;
+}
 
-				// 누적 확률 계산 (Shop 5, Rest 12, Mystery 22, Elite 8)
-				if (Rand < 5)                      Node.NodeType = EMapNodeType::Shop;    // 5%
-				else if (Rand < 5 + 12)            Node.NodeType = EMapNodeType::Rest;    // 12%
-				else if (Rand < 5 + 12 + 22)       Node.NodeType = EMapNodeType::Mystery; // 22%
-				else if (Rand < 5 + 12 + 22 + EliteChance) Node.NodeType = EMapNodeType::Elite;   // 8%
-				else                               Node.NodeType = EMapNodeType::Battle;  // 나머지(약 53~61%) 일반전투
-			}
-			NewStep.Nodes.Add(Node);
-		}
-		WorldMapData.Add(NewStep);
-	}
-	UE_LOG(LogTemp, Log, TEXT("[BWMap] World Map Generated with strict rules (15 floors)."));
+EDimensionType UBWGameInstance::GetRowDimension(int32 Row) const
+{
+	if (RowDimensions.IsValidIndex(Row)) return RowDimensions[Row];
+	return Row >= 0 && Row < 4 ? (EDimensionType)(Row + 1) : EDimensionType::None; // 옛 지도(줄 순서 없음)
+}
+
+EDimensionType UBWGameInstance::GetCurrentDimension() const
+{
+	return CurrentStep >= 0 ? GetRowDimension(CurrentDimIdx) : EDimensionType::None;
+}
+
+int32 UBWGameInstance::GetCurrentOverloadLevel() const
+{
+	const int32* Consecutive = ConsecutiveCounts.Find(GetCurrentDimension());
+	return Consecutive ? UBWMapRules::GetOverloadLevel(*Consecutive) : 0;
+}
+
+const FMapNode& UBWGameInstance::GetCurrentNode() const
+{
+	static const FMapNode Empty;
+	if (!WorldMapData.IsValidIndex(CurrentStep)) return Empty;
+	const TArray<FMapNode>& Nodes = WorldMapData[CurrentStep].Nodes;
+	const int32 Index = IsBossStep(CurrentStep) ? 0 : CurrentDimIdx;
+	return Nodes.IsValidIndex(Index) ? Nodes[Index] : Empty;
 }
 
 bool UBWGameInstance::CanMoveToNode(int32 TargetStep, int32 TargetDimIdx)
 {
-	// 1. 단계 체크 (반드시 다음 단계여야 함)
-	if (TargetStep != CurrentStep + 1) return false;
-
-	// 2. 인덱스 범위 체크
-	if (TargetStep < 0 || TargetStep >= WorldMapData.Num()) return false;
-	if (TargetDimIdx < 0 || TargetDimIdx >= 4) return false;
-
-	// 3. 첫 시작인 경우 (CurrentStep == -1) 아무 노드나 선택 가능
-	if (CurrentStep == -1) return true;
-
-	// 4. [중요] 인접 차원 체크 (거리 1 이내)
-	int32 Dist = FMath::Abs(CurrentDimIdx - TargetDimIdx);
-	return Dist <= 1;
+	if (bActCleared) return false;
+	return UBWMapRules::CanMove(WorldMapData, CurrentStep, CurrentDimIdx, TargetStep, TargetDimIdx, bRiftJumpReady);
 }
 
-void UBWGameInstance::SelectMapNode(int32 Step, int32 DimIdx)
+void UBWGameInstance::ClaimNeglectBonus(EDimensionType Dim, int32 Neglect, FBWArrivalReport& Report)
 {
-	if (!CanMoveToNode(Step, DimIdx)) return;
+	int32& Claims = BonusClaimCounts.FindOrAdd(Dim);
+	++Claims;
+	const FBWNeglectBonus Bonus = UBWMapRules::MakeNeglectBonus(Dim, Claims, Neglect >= UBWMapRules::GetNeglectCap(Dim));
 
+	Report.bClaimedBonus = true;
+	Report.bDeepNeglect = Bonus.bDeep;
+	Report.BonusPercent = Bonus.Percent;
+	Report.GoldGained = Bonus.Gold;
+	CurrentGold += Bonus.Gold;
+
+	switch (Dim)
+	{
+	case EDimensionType::Patrovas:
+		MapBonus.UpgradedCardChoices = Bonus.UpgradedCardChoices;
+		MapBonus.NormalCardChoices = Bonus.NormalCardChoices;
+		Report.BonusLines.Add(Bonus.NormalCardChoices > 0
+			? FString::Printf(TEXT("다음 카드 보상: 강화 카드 %d장 + 일반 %d장 중 선택"), Bonus.UpgradedCardChoices, Bonus.NormalCardChoices)
+			: FString::Printf(TEXT("다음 카드 보상: 강화 카드 %d장 중 선택"), Bonus.UpgradedCardChoices));
+		break;
+	case EDimensionType::Berend:
+		MapBonus.VictoryHealFraction = FMath::Max(MapBonus.VictoryHealFraction, Bonus.VictoryHealFraction);
+		Report.BonusLines.Add(FString::Printf(TEXT("다음 전투에서 이기면 최대 HP의 %d%% 회복"), FMath::RoundToInt(Bonus.VictoryHealFraction * 100.0f)));
+		break;
+	case EDimensionType::Geleon:
+		MapBonus.NextBattleDamageBonus = FMath::Max(MapBonus.NextBattleDamageBonus, Bonus.NextBattleDamageBonus);
+		Report.BonusLines.Add(FString::Printf(TEXT("다음 전투 1회 피해량 +%d%%"), FMath::RoundToInt(Bonus.NextBattleDamageBonus * 100.0f)));
+		break;
+	case EDimensionType::Taiga:
+		PendingCardRemovals += Bonus.CardRemovals;
+		Report.CardRemovals = Bonus.CardRemovals;
+		MapBonus.EquipmentGrade = FMath::Max(MapBonus.EquipmentGrade, Bonus.EquipmentGrade);
+		Report.BonusLines.Add(FString::Printf(TEXT("지금 카드 %d장 삭제"), Bonus.CardRemovals));
+		Report.BonusLines.Add(Bonus.EquipmentGrade >= 2 ? TEXT("다음 전투 보상에 전설 장비 확정") : TEXT("다음 전투 보상에 희귀 이상 장비 확정"));
+		break;
+	default:
+		break;
+	}
+	if (Bonus.Gold > 0) Report.BonusLines.Add(FString::Printf(TEXT("깊은 방치: 골드 +%d"), Bonus.Gold));
+	UE_LOG(LogTemp, Warning, TEXT("[BWMap] Neglect bonus %s (neglect %d, claim #%d, %d%%)"), *UBWMapRules::GetDimensionName(Dim).ToString(), Neglect, Claims, Bonus.Percent);
+}
+
+bool UBWGameInstance::SelectMapNode(int32 Step, int32 DimIdx)
+{
+	if (!CanMoveToNode(Step, DimIdx)) return false;
+
+	const bool bFirst = CurrentStep < 0;
+	const bool bBoss = IsBossStep(Step);
+	const int32 PrevRow = CurrentDimIdx;
+	const EDimensionType PrevDim = GetCurrentDimension();
+	const int32 PrevLevel = bFirst ? 0 : GetCurrentOverloadLevel();
+
+	// 1. 차원문 통과 (보스 칸은 줄이 합류할 뿐 줄을 바꾸지 않는다)
 	CurrentStep = Step;
-	CurrentDimIdx = DimIdx;
-	
-	// [추가] 선택한 노드를 '방문함' 상태로 영구 저장
+	if (!bBoss) CurrentDimIdx = DimIdx;
 	if (WorldMapData.IsValidIndex(Step) && WorldMapData[Step].Nodes.IsValidIndex(DimIdx))
 	{
 		WorldMapData[Step].Nodes[DimIdx].bIsVisited = true;
 	}
+	bRiftJumpReady = false; // 균열 점프는 바로 다음 칸 한 번뿐
 
-	EDimensionType SelectedDim = (EDimensionType)(DimIdx + 1);
+	const EDimensionType Dim = GetCurrentDimension();
+	FBWArrivalReport Report;
+	Report.Dimension = Dim;
+	Report.bChangedRow = !bFirst && !bBoss && PrevRow != CurrentDimIdx;
 
-	// 통계 업데이트 (연속/방치 효과)
-	for (int32 i = 1; i <= 4; ++i)
+	// 2. 방치 보너스 수령 (도착 전 카운터로 판정, 보스 칸에서는 수령 불가) → 카운터 갱신
+	if (!bBoss)
 	{
-		EDimensionType Dim = (EDimensionType)i;
-		if (Dim == SelectedDim)
-		{
-			ConsecutiveCounts[Dim]++;
-			NeglectedCounts[Dim] = 0; // 선택했으니 방치 초기화
-		}
-		else
-		{
-			ConsecutiveCounts[Dim] = 0; // 선택 안 했으니 연속 초기화
-			NeglectedCounts[Dim]++;
-		}
+		const int32 Neglect = NeglectedCounts.FindRef(Dim);
+		Report.NeglectCount = Neglect;
+		if (Neglect >= UBWMapRules::GetNeglectCondition(Dim)) ClaimNeglectBonus(Dim, Neglect, Report);
+		UBWMapRules::AdvanceNeglect(NeglectedCounts, Dim);
 	}
 
-	UE_LOG(LogTemp, Warning, TEXT("[BWMap] Moved to Step %d, Dim %d (%s)"), Step, DimIdx, *UEnum::GetValueAsString(SelectedDim));
+	// 3. 과부하 판정: 같은 줄이면 연속 +1, 줄을 바꾸면 1부터 (다른 줄은 0)
+	for (TPair<EDimensionType, int32>& Pair : ConsecutiveCounts)
+	{
+		if (Pair.Key != Dim) Pair.Value = 0;
+		else Pair.Value = (bFirst || Report.bChangedRow || PrevDim != Dim) ? 1 : Pair.Value + 1;
+	}
+	Report.Consecutive = ConsecutiveCounts.FindRef(Dim);
+	Report.OverloadLevel = UBWMapRules::GetOverloadLevel(Report.Consecutive);
+	Report.bOverloadChanged = Report.OverloadLevel != PrevLevel;
+
+	// 4. 노드 진입 중 지도 규칙에 속하는 것: 균열은 다음 칸 2줄 점프
+	const FMapNode& Node = GetCurrentNode();
+	if (Node.NodeType == EMapNodeType::Rift) bRiftJumpReady = true;
+
+	LastArrival = Report;
+	UE_LOG(LogTemp, Warning, TEXT("[BWMap] Act %d step %d row %d (%s, %s): consecutive %d, overload %d, bonus %s"), CurrentStage, Step, CurrentDimIdx,
+		*UBWMapRules::GetDimensionName(Dim).ToString(), *UBWMapRules::GetNodeTypeName(Node.NodeType).ToString(), Report.Consecutive, Report.OverloadLevel, Report.bClaimedBonus ? TEXT("yes") : TEXT("no"));
+	return true;
+}
+
+void UBWGameInstance::UseDimensionAltar()
+{
+	for (TPair<EDimensionType, int32>& Pair : ConsecutiveCounts) Pair.Value = 0;
+	for (TPair<EDimensionType, int32>& Pair : BonusClaimCounts) Pair.Value = 0;
+	UE_LOG(LogTemp, Warning, TEXT("[BWMap] Dimension altar: overload and bonus resistance reset"));
+}
+
+float UBWGameInstance::ConsumeNextBattleDamageBonus()
+{
+	const float Bonus = MapBonus.NextBattleDamageBonus;
+	MapBonus.NextBattleDamageBonus = 0.0f;
+	return Bonus;
+}
+
+bool UBWGameInstance::AdvanceToNextAct()
+{
+	if (CurrentStage >= UBWMapRules::NumActs) return false;
+	++CurrentStage;
+	GenerateWorldMap();
+	SaveRun();
+	return true;
+}
+
+bool UBWGameInstance::IsStepRevealed(int32 Step) const
+{
+	return Step <= CurrentStep + VisibilityRange;
 }
 
 void UBWGameInstance::GetNodeVisibilityState(int32 Step, EMapNodeType Type, bool& bOutIsVisible, bool& bOutIsFogged)
 {
-	// 0. 게임 시작 전(CurrentStep == -1)일 때 1층(Step 0)은 무조건 보임
-	if (CurrentStep == -1 && Step == 0)
-	{
-		bOutIsVisible = true;
-		bOutIsFogged = false;
-		return;
-	}
-
-	// 1. 이미 지난 층은 무조건 보임
-	if (Step <= CurrentStep)
-	{
-		bOutIsVisible = true;
-		bOutIsFogged = false;
-		return;
-	}
-
-	// 2. 기획상 '고정된 층(Fixed Step)'의 노드들은 안개와 상관없이 처음부터 보임
-	// 9층(Step 8): 고정 상자, 14층(Step 13): 고정 모닥불, 15층(Step 14): 고정 보스
-	bool bIsFixedStep = (Step == 8 || Step == 13 || Step == 14);
-	if (bIsFixedStep)
-	{
-		bOutIsVisible = true;
-		bOutIsFogged = false;
-		return;
-	}
-
-	// 3. 현재 위치에서 VisibilityRange 이내의 노드는 보임
-	if (Step <= CurrentStep + VisibilityRange)
-	{
-		bOutIsVisible = true;
-		bOutIsFogged = false;
-	}
-	else
-	{
-		// 안개에 가려짐
-		bOutIsVisible = true; // 존재는 하되
-		bOutIsFogged = true;  // 검은 덮개로 가림
-	}
+	// 가시거리(2칸) 안만 노드가 보인다. 고정 칸(1·8·15칸)과 보스는 규칙으로 정해져 있어 멀리서도 종류를 보여 준다
+	EMapNodeType FixedType;
+	bOutIsVisible = true;
+	bOutIsFogged = !IsStepRevealed(Step) && !UBWMapRules::GetFixedNodeType(Step, FixedType);
 }
 
 void UBWGameInstance::GetCountryStats(EDimensionType Dim, int32& OutConsecutive, int32& OutNeglected)

@@ -37,6 +37,8 @@ FBWDiceRange UBWDimensionRules::ScaleSkillMax(const FBWDiceRange& Range, float M
 FBWDuelSide UBWDimensionRules::ApplyToPlayerSide(const FBWBattlefieldState& State, const FBWDuelSide& Side)
 {
 	FBWDuelSide Result = Side;
+	// 방치 보너스 피해량은 겔레온 기믹과 더한다 (겔레온 +50% + 보너스 +50% = ×2.0)
+	if (State.Dimension != EDimensionType::Geleon && State.BonusDamage > 0.0f) Result.DamageMultiplier *= 1.0f + State.BonusDamage;
 	switch (State.Dimension)
 	{
 	case EDimensionType::Patrovas:
@@ -44,7 +46,7 @@ FBWDuelSide UBWDimensionRules::ApplyToPlayerSide(const FBWBattlefieldState& Stat
 		Result.SkillRange = ScaleSkillMax(Result.SkillRange, State.PatrovasMaxMultiplier);
 		break;
 	case EDimensionType::Geleon:
-		Result.DamageMultiplier *= GeleonDamageMultiplier;
+		Result.DamageMultiplier *= GeleonDamageMultiplier + State.BonusDamage;
 		if (State.bOverloaded) Result.IncomingDamageMultiplier *= GeleonOverloadIncomingMultiplier;
 		break;
 	case EDimensionType::Taiga:

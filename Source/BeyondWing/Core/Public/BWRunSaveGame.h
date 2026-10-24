@@ -13,7 +13,8 @@ class BEYONDWING_API UBWRunSaveGame : public USaveGame
 	GENERATED_BODY()
 
 public:
-	static constexpr int32 CurrentVersion = 1;
+	// 2: 지도 기획서 구현(16칸 지도, 차원문, 막, 판 덱) — 옛 저장은 지도 형식이 달라 불러오지 않는다
+	static constexpr int32 CurrentVersion = 2;
 
 	UPROPERTY() int32 Version = CurrentVersion;
 	UPROPERTY() FDateTime SavedAt;
@@ -41,4 +42,15 @@ public:
 	UPROPERTY() int32 CurrentDimIdx = -1;
 	UPROPERTY() TMap<EDimensionType, int32> ConsecutiveCounts;
 	UPROPERTY() TMap<EDimensionType, int32> NeglectedCounts;
+	UPROPERTY() TArray<EDimensionType> RowDimensions;
+	UPROPERTY() bool bRiftJumpReady = false;
+	UPROPERTY() TMap<EDimensionType, int32> BonusClaimCounts;
+	UPROPERTY() FBWMapBonusState MapBonus;
+	UPROPERTY() int32 PendingCardRemovals = 0;
+	UPROPERTY() bool bActCleared = false;
+	UPROPERTY() int32 AugmentPickedAct = 0;
+
+	// 판 덱 (보상으로 얻은 카드·강화·삭제가 반영된 덱)
+	UPROPERTY() TArray<FBWRunCard> RunDeck;
+	UPROPERTY() TArray<FName> MapUsedCards; // 이번 막에 지도에서 쓴 효과카드
 };

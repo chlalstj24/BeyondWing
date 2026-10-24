@@ -30,6 +30,9 @@ struct FBWBattlefieldState
 	// 효과카드 사용 모드에서 처음 쓴 공격카드 이름 (비어 있으면 아직 안 씀)
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battlefield") FString GeleonAttackCardName;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battlefield") bool bGeleonKindLocked = false;
+
+	// [추가] 지도 방치 보너스(겔레온)로 이번 전투 피해량 + (0.5 = +50%). 겔레온 기믹 +50%와 합산
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Battlefield") float BonusDamage = 0.0f;
 };
 
 // 국가 기믹 규칙. 상태가 없고, 무작위는 넘겨받은 스트림에서 뽑는다

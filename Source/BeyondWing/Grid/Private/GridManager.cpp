@@ -232,9 +232,9 @@ void AGridManager::CheckVictoryCondition()
 		UBWGameInstance* GI = Cast<UBWGameInstance>(GetGameInstance());
 		if (GI)
 		{
-			GI->GenerateCombatRewards(GI->CurrentEncounterType);
-			GI->SaveRun(); // [추가] 이긴 상태(HP·보상·지도 위치)로 이어하기 저장
-			UGameplayStatics::OpenLevel(GetWorld(), TEXT("MapLevel"));
+			// [수정] 보상 생성(방치 보너스 반영) + 보스면 막 클리어 + 이어하기 저장. 보상은 지도 화면에서 고른다
+			GI->OnBattleWon();
+			UGameplayStatics::OpenLevel(GetWorld(), TEXT("/Game/System/Level/MapLevel"));
 		}
 	}
 }

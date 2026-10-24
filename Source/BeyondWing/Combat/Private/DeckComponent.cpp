@@ -1,6 +1,7 @@
 #include "DeckComponent.h"
 #include "BWCharacter.h"
 #include "BeyondWing/Core/Public/BWGameInstance.h"
+#include "BeyondWing/Core/Public/BWMapRules.h"
 #include "Kismet/GameplayStatics.h"
 
 UDeckComponent::UDeckComponent()
@@ -32,10 +33,24 @@ void UDeckComponent::LoadDeckByCharacterClass()
 	if (!OwnerCharacter) return;
 
 	const TArray<FName>* TargetSourceList = nullptr;
+	const UBWGameInstance* GI = Cast<UBWGameInstance>(UGameplayStatics::GetGameInstance(this));
+
+	// [추가] 판 덱(보상·강화·삭제가 반영된 덱)이 있으면 그것을 쓴다
+	if (GI && GI->RunDeck.Num() > 0 && GI->SelectedClass == OwnerCharacter->CharacterClass)
+	{
+		Deck.Empty();
+		for (const FBWRunCard& Entry : GI->RunDeck)
+		{
+			const FBWCardData* Found = CardDataTable->FindRow<FBWCardData>(Entry.Row, TEXT("DeckLoadContext"));
+			if (!Found) { UE_LOG(LogTemp, Warning, TEXT("[DeckComponent] 테이블에서 카드를 검색할 수 없습니다: %s"), *Entry.Row.ToString()); continue; }
+			Deck.Add(Entry.bUpgraded ? UBWMapRules::MakeUpgradedCard(*Found) : *Found);
+		}
+		for (int32 i = 0; i < Deck.Num() - 1; ++i) Deck.Swap(i, FMath::RandRange(i, Deck.Num() - 1));
+		return;
+	}
 
 	// [추가] 삶의 방식 테이블(DT_Classes)에 시작 덱이 있으면 그것을 쓰고, 없으면 아래 직업별 배열을 쓴다
 	TArray<FName> TableDeck;
-	const UBWGameInstance* GI = Cast<UBWGameInstance>(UGameplayStatics::GetGameInstance(this));
 	if (GI && GI->GetClassStartingDeck(OwnerCharacter->CharacterClass, TableDeck)) TargetSourceList = &TableDeck;
 	else switch (OwnerCharacter->CharacterClass)
 	{
