@@ -48,10 +48,11 @@ void UBWMapRules::GetNodeWeights(EDimensionType Dimension, TArray<TPair<EMapNode
 	OutWeights.Add({ EMapNodeType::Rift, Rift });
 }
 
-EMapNodeType UBWMapRules::PickNodeType(EDimensionType Dimension, FRandomStream& Stream)
+EMapNodeType UBWMapRules::PickNodeType(EDimensionType Dimension, FRandomStream& Stream, bool bAllowRest)
 {
 	TArray<TPair<EMapNodeType, int32>> Weights;
 	GetNodeWeights(Dimension, Weights);
+	if (!bAllowRest) Weights.RemoveAll([](const TPair<EMapNodeType, int32>& W) { return W.Key == EMapNodeType::Rest; });
 	int32 Total = 0;
 	for (const TPair<EMapNodeType, int32>& W : Weights) Total += W.Value;
 
@@ -84,6 +85,27 @@ TArray<FMapStep> UBWMapRules::GenerateAct(const TArray<EDimensionType>& RowDimen
 			Node.NodeType = bFixed ? FixedType : PickNodeType(Node.Dimension, Stream);
 			if (!bFixed) RandomCells.Add(FIntPoint(Step, Row));
 			Map[Step].Nodes.Add(Node);
+		}
+	}
+
+	// 1-2. 휴식 제한 (줄마다): 무작위 휴식은 MaxRandomRestsPerRow개까지, 휴식 바로 다음 칸에 또 휴식 없음,
+	// 15칸 고정 휴식 바로 앞(14칸)에도 없음. 넘치는 휴식은 휴식을 뺀 비중으로 다시 뽑는다
+	for (int32 Row = 0; Row < NumRows; ++Row)
+	{
+		int32 Rests = 0;
+		bool bPrevRest = false;
+		for (int32 Step = 0; Step < StepsPerAct; ++Step)
+		{
+			FMapNode& Node = Map[Step].Nodes[Row];
+			EMapNodeType FixedType;
+			if (!GetFixedNodeType(Step, FixedType) && Node.NodeType == EMapNodeType::Rest)
+			{
+				if (Rests >= MaxRandomRestsPerRow || bPrevRest || Step == RestStep - 1)
+					Node.NodeType = PickNodeType(Node.Dimension, Stream, false);
+				else
+					++Rests;
+			}
+			bPrevRest = Node.NodeType == EMapNodeType::Rest;
 		}
 	}
 
@@ -211,26 +233,117 @@ void UBWMapRules::AdvanceNeglect(TMap<EDimensionType, int32>& Neglected, EDimens
 	}
 }
 
+namespace BWUpgrade
+{
+	// 설명 글에서 "앞말 + 옛 숫자 + 뒷말"을 찾아 새 숫자로 바꾼다. 숫자가 이어 붙은 곳(10의 1 등)은 건너뛴다
+	static bool ReplaceNumber(FString& Text, const FString& Before, int32 Old, int32 New, const FString& After)
+	{
+		const FString From = Before + FString::FromInt(Old) + After;
+		int32 Pos = 0;
+		while ((Pos = Text.Find(From, ESearchCase::CaseSensitive, ESearchDir::FromStart, Pos)) != INDEX_NONE)
+		{
+			const int32 End = Pos + From.Len();
+			const bool bDigitAfter = After.IsEmpty() && End < Text.Len() && FChar::IsDigit(Text[End]);
+			const bool bDigitBefore = Before.IsEmpty() && Pos > 0 && FChar::IsDigit(Text[Pos - 1]);
+			if (!bDigitAfter && !bDigitBefore)
+			{
+				Text = Text.Left(Pos) + Before + FString::FromInt(New) + After + Text.Mid(End);
+				return true;
+			}
+			Pos = End;
+		}
+		return false;
+	}
+
+	struct FPattern { const TCHAR* Before; const TCHAR* After; };
+
+	// 수치를 올리고 설명의 숫자도 바꾼다. 설명에 그 숫자가 없으면 Fallback 문장을 덧붙인다
+	static void Bump(FString& Desc, int32& Value, int32 Amount, std::initializer_list<FPattern> Patterns, const TCHAR* FallbackFormat)
+	{
+		if (Value <= 0 || Amount == 0) return;
+		const int32 Old = Value;
+		Value += Amount;
+		for (const FPattern& P : Patterns)
+		{
+			if (ReplaceNumber(Desc, P.Before, Old, Value, P.After)) return;
+		}
+		// FallbackFormat의 %d = 새 값, %% = %
+		const FString Sentence = FString(FallbackFormat).Replace(TEXT("%d"), *FString::FromInt(Value)).Replace(TEXT("%%"), TEXT("%"));
+		Desc = FString::Printf(TEXT("%s %s"), *Desc.TrimEnd(), *Sentence);
+	}
+
+	// 확률(0~1)은 % 정수로 바꿔서 같은 방식으로
+	static void BumpPercent(FString& Desc, float& Value, int32 AmountPercent, std::initializer_list<FPattern> Patterns, const TCHAR* FallbackFormat)
+	{
+		if (Value <= 0.0f || Value >= 1.0f) return;
+		int32 Percent = FMath::RoundToInt(Value * 100.0f);
+		Bump(Desc, Percent, AmountPercent, Patterns, FallbackFormat);
+		Value = FMath::Min(1.0f, Percent / 100.0f);
+	}
+
+	static const TCHAR* StatusName(EStatusEffect Status)
+	{
+		switch (Status)
+		{
+		case EStatusEffect::Stun:       return TEXT("기절");
+		case EStatusEffect::Slow:       return TEXT("둔화");
+		case EStatusEffect::Weak:       return TEXT("약화");
+		case EStatusEffect::Vulnerable: return TEXT("취약");
+		case EStatusEffect::Bleed:      return TEXT("출혈");
+		case EStatusEffect::Confusion:  return TEXT("혼란");
+		case EStatusEffect::Focus:      return TEXT("집중");
+		default:                        return TEXT("");
+		}
+	}
+}
+
 FBWCardData UBWMapRules::MakeUpgradedCard(const FBWCardData& Card)
 {
+	using namespace BWUpgrade;
 	FBWCardData Up = Card;
 	if (Card.CardName.EndsWith(TEXT("+"))) return Up;
 	Up.CardName = Card.CardName + TEXT("+");
 	if (Card.CardKind == ECardKind::Attack)
 	{
+		// 공격카드는 숫자 범위만 오른다 (카드 왼쪽 위 숫자에 그대로 보인다)
 		Up.SkillMin += 1;
 		Up.SkillMax += 2;
+		return Up;
 	}
-	else
+
+	// 효과카드: 카드에 있는 수치를 모두 올리고, 설명의 숫자도 같이 바꾼다
+	FString& D = Up.Description;
+	Bump(D, Up.EffectHeal, 3, { { TEXT("HP "), TEXT("") }, { TEXT("HP를 "), TEXT("") }, { TEXT("[치유] "), TEXT("") }, { TEXT("회복 "), TEXT("") } }, TEXT("회복 %d."));
+	Bump(D, Up.EffectBlock, 3, { { TEXT("방어도 "), TEXT("") }, { TEXT("방어도를 "), TEXT("") } }, TEXT("방어도 %d."));
+	Bump(D, Up.EffectMove, 1, { { TEXT("이동 +"), TEXT("") } }, TEXT("이동 +%d."));
+	Bump(D, Up.EffectMP, 1, { { TEXT("MP +"), TEXT("") } }, TEXT("MP +%d."));
+	Bump(D, Up.EffectDraw, 1, { { TEXT("카드 "), TEXT("장") } }, TEXT("카드 %d장 뽑기."));
+	Bump(D, Up.EffectAttackMaxBonus, 1, { { TEXT("최댓값 +"), TEXT("") } }, TEXT("공격 최댓값 +%d."));
+	Bump(D, Up.EffectCounter, 2, { { TEXT("반격 "), TEXT("") } }, TEXT("반격 %d."));
+	Bump(D, Up.EffectDefenseBonus, 1, { { TEXT("방어 +"), TEXT("") } }, TEXT("이번 적 턴 방어 +%d."));
+	Bump(D, Up.EffectDark, 1, { { TEXT("어둠 +"), TEXT("") } }, TEXT("어둠 +%d."));
+	BumpPercent(D, Up.EffectEvadeBonus, 10, { { TEXT("회피 +"), TEXT("%") } }, TEXT("이번 적 턴 회피 +%d%%."));
+	BumpPercent(D, Up.CritChanceBonus, 15, { { TEXT("치명타 +"), TEXT("%") } }, TEXT("이번 턴 치명타 +%d%%."));
+	if (Up.Special == EBWCardSpecial::Chant) Bump(D, Up.SpecialValue, 2, { { TEXT("최댓값 +"), TEXT("") } }, TEXT("최댓값 +%d."));
+	if (Up.SelfStatus != EStatusEffect::None)
 	{
-		auto Bump = [](int32& Value, int32 Amount) { if (Value > 0) Value += Amount; };
-		Bump(Up.EffectHeal, 3);
-		Bump(Up.EffectBlock, 3);
-		Bump(Up.EffectMove, 1);
-		Bump(Up.EffectMP, 1);
-		Bump(Up.EffectDraw, 1);
-		Bump(Up.EffectAttackMaxBonus, 1);
-		if (Up.SelfStatus != EStatusEffect::None) Up.SelfStatusDuration += 1;
+		const FString Name = StatusName(Up.SelfStatus);
+		Bump(D, Up.SelfStatusDuration, 1, { { *(Name + TEXT(" ")), TEXT("턴") } }, *(Name + TEXT(" %d턴.")));
+	}
+
+	// 오를 수치가 없는 카드(장전·강림·질풍노도 등): MP가 들면 1 줄이고, 아니면 카드 1장을 더 뽑는다
+	const bool bChanged = Up.EffectHeal != Card.EffectHeal || Up.EffectBlock != Card.EffectBlock || Up.EffectMove != Card.EffectMove || Up.EffectMP != Card.EffectMP
+		|| Up.EffectDraw != Card.EffectDraw || Up.EffectAttackMaxBonus != Card.EffectAttackMaxBonus || Up.EffectCounter != Card.EffectCounter
+		|| Up.EffectDefenseBonus != Card.EffectDefenseBonus || Up.EffectDark != Card.EffectDark || Up.EffectEvadeBonus != Card.EffectEvadeBonus
+		|| Up.CritChanceBonus != Card.CritChanceBonus || Up.SpecialValue != Card.SpecialValue || Up.SelfStatusDuration != Card.SelfStatusDuration;
+	if (!bChanged)
+	{
+		if (Up.MPCost > 0) Up.MPCost -= 1;
+		else
+		{
+			Up.EffectDraw = 1;
+			D = FString::Printf(TEXT("%s 카드 1장 뽑기."), *D.TrimEnd());
+		}
 	}
 	return Up;
 }
@@ -260,6 +373,6 @@ FText UBWMapRules::GetDimensionName(EDimensionType Dimension)
 	case EDimensionType::Berend:   return FText::FromString(TEXT("베렌드"));
 	case EDimensionType::Geleon:   return FText::FromString(TEXT("겔레온"));
 	case EDimensionType::Taiga:    return FText::FromString(TEXT("타이가"));
-	default:                       return FText::FromString(TEXT("차원 없음"));
+	default:                       return FText::FromString(TEXT("탑 내부"));
 	}
 }

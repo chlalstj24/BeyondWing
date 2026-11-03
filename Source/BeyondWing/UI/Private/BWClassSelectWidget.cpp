@@ -1,4 +1,5 @@
 #include "BeyondWing/UI/Public/BWClassSelectWidget.h"
+#include "BeyondWing/UI/Public/BWSkin.h"
 #include "BeyondWing/Core/Public/BWGameInstance.h"
 #include "BeyondWing/Character/Public/BWCharacter.h"
 #include "BeyondWing/Combat/Public/DeckComponent.h"
@@ -27,7 +28,7 @@
 namespace BWClassSelect
 {
 	static constexpr int32 MaxCards = 5;
-	static constexpr int32 NumRatings = 4;
+	static constexpr int32 NumRatings = 5;
 	static constexpr int32 RatingCells = 5;
 	static const TCHAR* FrameGlowPath = TEXT("/Game/HUD/Texture/UI/T_UI_FrameGlow.T_UI_FrameGlow");
 
@@ -59,7 +60,7 @@ namespace BWClassSelect
 
 	static int32 Rating(const FBWClassData& Data, int32 Index)
 	{
-		const int32 Values[] = { Data.RatingFirepower, Data.RatingSurvival, Data.RatingMobility, Data.RatingGrowth };
+		const int32 Values[] = { Data.RatingFirepower, Data.RatingSurvival, Data.RatingMobility, Data.RatingGrowth, Data.RatingDifficulty };
 		return Values[FMath::Clamp(Index, 0, NumRatings - 1)];
 	}
 
@@ -89,15 +90,17 @@ UBWClassSelectWidget::UBWClassSelectWidget(const FObjectInitializer& ObjectIniti
 	GlowTexture = TSoftObjectPtr<UTexture2D>(FSoftObjectPath(TEXT("/Game/HUD/Texture/UI/T_UI_Glow.T_UI_Glow")));
 	VignetteTexture = TSoftObjectPtr<UTexture2D>(FSoftObjectPath(TEXT("/Game/HUD/Texture/UI/T_UI_Vignette.T_UI_Vignette")));
 
-	ScreenTitle = FText::FromString(TEXT("삶의 방식 선택"));
-	ScreenSubtitle = FText::FromString(TEXT("이번 여정을 함께할 삶의 방식을 고르세요"));
-	PromptText = FText::FromString(TEXT("삶의 방식을 고르세요. 저마다 속도·방어·자원·시작 덱이 다릅니다."));
+	ScreenTitle = FText::FromString(TEXT("당신의 삶의 방식은 무엇입니까?"));
+	ScreenSubtitle = FText::FromString(TEXT("탑은 누구에게나 열려 있습니다. 계약서에 서명만 하신다면요."));
+	PromptText = FText::FromString(TEXT("삶의 방식을 골라 주세요. 저마다 속도도, 버티는 법도, 들고 오는 카드도 다릅니다."));
 	SelectedFormat = FText::FromString(TEXT("선택: {Title} · {Name}"));
-	StartButtonText = FText::FromString(TEXT("이 삶의 방식으로 시작"));
+	StartButtonText = FText::FromString(TEXT("계약서에 서명합니다"));
 	BackButtonText = FText::FromString(TEXT("뒤로"));
 	StartingDeckLabel = FText::FromString(TEXT("시작 덱"));
+	MechanicsLabel = FText::FromString(TEXT("[ 고유 기믹 ]"));
+	StartKitLabel = FText::FromString(TEXT("[ 시작할 때 가져가는 것 ]"));
 	IllustrationPlaceholder = FText::FromString(TEXT("일러스트"));
-	RatingNames = { FText::FromString(TEXT("화력")), FText::FromString(TEXT("생존")), FText::FromString(TEXT("기동")), FText::FromString(TEXT("성장")) };
+	RatingNames = { FText::FromString(TEXT("화력")), FText::FromString(TEXT("생존")), FText::FromString(TEXT("기동")), FText::FromString(TEXT("성장")), FText::FromString(TEXT("난이도")) };
 }
 
 void UBWClassSelectWidget::LoadCardData()
@@ -224,8 +227,9 @@ void UBWClassSelectWidget::UpdateLook(const FGeometry& MyGeometry, float DeltaTi
 	// 시작 버튼: 고를 수 있게 되면 은은하게 숨 쉰다
 	if (BTN_Start && BTN_Start->GetIsEnabled())
 	{
-		const float Pulse = 0.85f + 0.15f * FMath::Sin(OpenTime * 4.0f);
-		BTN_Start->SetBackgroundColor(FLinearColor(0.95f * Pulse, 0.7f * Pulse, 0.25f * Pulse));
+		// 석판 버튼 위에 밝기만 오르내린다
+		const float Pulse = 1.0f + 0.18f * FMath::Sin(OpenTime * 4.0f);
+		BTN_Start->SetBackgroundColor(FLinearColor(Pulse, Pulse, Pulse, 1.0f));
 	}
 }
 
@@ -404,16 +408,17 @@ void UBWClassSelectWidget::BuildDefaultLayout()
 		UHorizontalBox* InfoRow = WidgetTree->ConstructWidget<UHorizontalBox>(UHorizontalBox::StaticClass(), *FString::Printf(TEXT("BOX_Info%d"), i));
 		UVerticalBox* LeftColumn = WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass());
 
-		// 능력 막대: 화력·생존·기동·성장을 5칸으로 (펼치면 칸과 글씨가 커진다)
+		// 능력 막대: 화력·생존·기동·성장·난이도를 5칸으로 (펼치면 칸과 글씨가 커진다)
 		UVerticalBox* Bars = WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass(), *FString::Printf(TEXT("BOX_Bars%d"), i));
 		for (int32 r = 0; r < BWClassSelect::NumRatings; ++r)
 		{
 			UHorizontalBox* BarRow = WidgetTree->ConstructWidget<UHorizontalBox>(UHorizontalBox::StaticClass());
 			USizeBox* LabelBox = WidgetTree->ConstructWidget<USizeBox>(USizeBox::StaticClass());
-			LabelBox->SetWidthOverride(BarLabelWidthNormal);
+			LabelBox->SetWidthOverride(FMath::Max(BarLabelWidthNormal, 50.0f)) /* "난이도" 세 글자가 막대에 겹치지 않게 */;
 			UTextBlock* BarLabel = MakeText(*FString::Printf(TEXT("TXT_Bar%d_%d"), i, r), BarFontNormal, FLinearColor::White, ETextJustify::Left);
 			BarLabel->SetAutoWrapText(false);
-			BarLabel->SetText(RatingNames.IsValidIndex(r) ? RatingNames[r] : FText::GetEmpty());
+			// WBP에 옛 이름 4개만 저장돼 있어도 난이도 줄 이름은 나오게
+			BarLabel->SetText(RatingNames.IsValidIndex(r) ? RatingNames[r] : r == 4 ? FText::FromString(TEXT("난이도")) : FText::GetEmpty());
 			LabelBox->SetContent(BarLabel);
 			if (UHorizontalBoxSlot* LabelSlot = BarRow->AddChildToHorizontalBox(LabelBox)) LabelSlot->SetVerticalAlignment(VAlign_Center);
 			for (int32 c = 0; c < BWClassSelect::RatingCells; ++c)
@@ -435,7 +440,7 @@ void UBWClassSelectWidget::BuildDefaultLayout()
 			BarLabelBoxes.Add(LabelBox);
 			if (UVerticalBoxSlot* BarSlot = Bars->AddChildToVerticalBox(BarRow)) BarSlot->SetPadding(FMargin(0.0f, 1.5f));
 		}
-		if (Info.RatingFirepower + Info.RatingSurvival + Info.RatingMobility + Info.RatingGrowth == 0) Bars->SetVisibility(ESlateVisibility::Collapsed);
+		if (Info.RatingFirepower + Info.RatingSurvival + Info.RatingMobility + Info.RatingGrowth + Info.RatingDifficulty == 0) Bars->SetVisibility(ESlateVisibility::Collapsed);
 		if (UVerticalBoxSlot* BarsSlot = LeftColumn->AddChildToVerticalBox(Bars))
 		{
 			BarsSlot->SetHorizontalAlignment(HAlign_Center);
@@ -453,8 +458,16 @@ void UBWClassSelectWidget::BuildDefaultLayout()
 		}
 
 		UTextBlock* LongText = MakeText(*FString::Printf(TEXT("TXT_ClassLong%d"), i), LongTextFontSize, FLinearColor::White, ETextJustify::Left);
-		LongText->SetVisibility(ESlateVisibility::Collapsed);
-		if (UHorizontalBoxSlot* LongSlot = InfoRow->AddChildToHorizontalBox(LongText))
+		UBorder* LongPanel = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), *FString::Printf(TEXT("BOX_LongPanel%d"), i));
+		{
+			// 작은 칸: 장식 없이 석판색 + 은빛 테두리
+			LongPanel->SetBrush(BWSkin::Plain(FLinearColor(0.1f, 0.12f, 0.15f, 0.92f), FLinearColor(0.68f, 0.7f, 0.74f, 0.5f), 1.0f));
+			LongPanel->SetBrushColor(FLinearColor::White);
+		}
+		LongPanel->SetPadding(FMargin(16.0f, 10.0f, 16.0f, 12.0f));
+		LongPanel->SetContent(LongText);
+		LongPanel->SetVisibility(ESlateVisibility::Collapsed);
+		if (UHorizontalBoxSlot* LongSlot = InfoRow->AddChildToHorizontalBox(LongPanel))
 		{
 			LongSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
 			LongSlot->SetVerticalAlignment(VAlign_Top);
@@ -537,7 +550,8 @@ void UBWClassSelectWidget::BuildDefaultLayout()
 		Size->SetMinDesiredWidth(220.0f); // 문구가 길어지면 버튼이 늘어난다
 		Size->SetHeightOverride(54.0f);
 		UButton* Button = WidgetTree->ConstructWidget<UButton>(UButton::StaticClass(), ButtonName);
-		Button->SetBackgroundColor(Tint);
+		// 석판 버튼 (시작은 붉은 강조)
+		if (!BWSkin::StyleButton(Button, Tint.R > 0.8f)) Button->SetBackgroundColor(Tint);
 		UTextBlock* Text = MakeText(*FString::Printf(TEXT("%s_Label"), ButtonName), 18, FLinearColor::White, ETextJustify::Center);
 		Text->SetText(Label);
 		Text->SetAutoWrapText(false);
@@ -597,8 +611,12 @@ void UBWClassSelectWidget::UpdateCardSizes(float DeltaTime)
 		{
 			const float Open = FMath::Clamp((CardWidths[i] - CardWidthNormal) / FMath::Max(1.0f, CardWidthExpanded - CardWidthNormal), 0.0f, 1.0f);
 			const bool bShow = bSelected && Open > 0.75f;
-			LongText->SetVisibility(bShow ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
-			LongText->SetRenderOpacity(bShow ? (Open - 0.75f) / 0.25f : 0.0f);
+			UWidget* LongPanel = LongText->GetParent() ? Cast<UWidget>(LongText->GetParent()) : Cast<UWidget>(LongText);
+			LongPanel->SetVisibility(bShow ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
+			LongPanel->SetRenderOpacity(bShow ? (Open - 0.75f) / 0.25f : 0.0f);
+			// 펼치면 왼쪽 수치 글(HP·속도·방어)은 오른쪽 '시작할 때 가져가는 것'에 다 있으므로 숨기고 막대만 둔다
+			UTextBlock* StatTexts[] = { TXT_Class0, TXT_Class1, TXT_Class2, TXT_Class3, TXT_Class4 };
+			if (i < UE_ARRAY_COUNT(StatTexts) && StatTexts[i]) StatTexts[i]->SetVisibility(bShow ? ESlateVisibility::Collapsed : ESlateVisibility::HitTestInvisible);
 			// 설명이 보이면 정보 줄 왼쪽(막대·수치)은 필요한 폭만, 아니면 카드 폭을 다 써서 가운데 정렬
 			if (InfoLeftSlots.IsValidIndex(i) && InfoLeftSlots[i])
 				InfoLeftSlots[i]->SetSize(FSlateChildSize(bShow ? ESlateSizeRule::Automatic : ESlateSizeRule::Fill));
@@ -618,7 +636,7 @@ void UBWClassSelectWidget::UpdateCardSizes(float DeltaTime)
 			{
 				const int32 Index = i * BWClassSelect::NumRatings + r;
 				if (BarLabelBoxes.IsValidIndex(Index) && BarLabelBoxes[Index])
-					BarLabelBoxes[Index]->SetWidthOverride(FMath::Lerp(BarLabelWidthNormal, BarLabelWidthExpanded, Grow));
+					BarLabelBoxes[Index]->SetWidthOverride(FMath::Lerp(FMath::Max(BarLabelWidthNormal, 50.0f), FMath::Max(BarLabelWidthExpanded, 64.0f), Grow));
 				UTextBlock* BarLabel = BarLabels.IsValidIndex(Index) ? BarLabels[Index].Get() : nullptr;
 				if (BarLabel && BarLabel->GetFont().Size != FontSize)
 				{
@@ -660,7 +678,20 @@ void UBWClassSelectWidget::RefreshCards()
 			Buttons[i]->SetIsEnabled(bAvailable);
 			// 고른 직업은 밝게, 나머지는 어둡게 (아직 안 골랐으면 모두 보통)
 			const float Strength = !bAvailable ? 0.25f : (bSelected ? 1.0f : (Selected == EClassType::Common ? 0.6f : 0.35f));
-			Buttons[i]->SetBackgroundColor(Info.Color * Strength + FLinearColor(0.0f, 0.0f, 0.0f, 1.0f - Strength));
+			// 석판 카드: 석판색에 직업 색을 조금 섞고, 고른 카드는 직업 색 테두리 (큰 장식 없이)
+			const FLinearColor Stone(0.07f, 0.085f, 0.105f, 1.0f);
+			FLinearColor Fill = FMath::Lerp(Stone, Info.Color * 0.3f, 0.22f) * (0.55f + 0.45f * Strength);
+			Fill.A = 1.0f;
+			const FLinearColor Silver(0.68f, 0.7f, 0.74f, 0.35f + 0.5f * Strength);
+			FLinearColor ClassEdge = Info.Color;
+			ClassEdge.A = 1.0f;
+			FButtonStyle Style = Buttons[i]->GetStyle();
+			Style.SetNormal(BWSkin::Plain(Fill, bSelected ? ClassEdge : Silver, bSelected ? 3.0f : 1.5f));
+			Style.SetHovered(BWSkin::Plain(Fill * 1.25f, bSelected ? ClassEdge : FLinearColor(0.92f, 0.94f, 0.97f, 1.0f), bSelected ? 3.0f : 2.0f));
+			Style.SetPressed(BWSkin::Plain(Fill * 0.8f, ClassEdge, 3.0f));
+			Style.SetDisabled(BWSkin::Plain(FLinearColor(0.08f, 0.09f, 0.11f, 1.0f), FLinearColor(1, 1, 1, 0.12f), 1.0f));
+			Buttons[i]->SetStyle(Style);
+			Buttons[i]->SetBackgroundColor(FLinearColor::White);
 		}
 		if (!Texts[i]) continue;
 
@@ -676,13 +707,43 @@ void UBWClassSelectWidget::RefreshCards()
 		UTextBlock* LongText = LongTexts.IsValidIndex(i) ? LongTexts[i].Get() : nullptr;
 		if (LongText && bSelected)
 		{
-			// 수치는 왼쪽 칸에 그대로 보이므로 오른쪽은 기본 공격 한 줄 + 설명 + 시작 덱
+			// 오른쪽: 한 줄 요약(설명 첫 줄) + 고유 기믹 + 시작 구성 (가져가는 것)
 			FBWSkillStats StartSkill;
 			StartSkill.PHA = Stats.PHA; StartSkill.TEC = Stats.TEC; StartSkill.INT = Stats.INT; StartSkill.FTH = Stats.FTH; StartSkill.MaxHP = Stats.MaxHP;
 			const FBWDiceRange Basic = UBWDuelRules::ComputeCardSkillRange(Info.BasicStrike, StartSkill);
-			const FString AttackLine = FString::Printf(TEXT("기본 공격 %d~%d · 공격카드 강화 %d%%"), Basic.Min, Basic.Max, FMath::RoundToInt(Info.CardPower * 100.0f));
-			LongText->SetText(FText::FromString(FString::Printf(TEXT("%s\n%s\n\n%s — %s"),
-				*AttackLine, *Info.Description.ToString(), *StartingDeckLabel.ToString(), *DescribeStartingDeck(Info.ClassType))));
+			const FBWClassCombatProfile& Combat = Info.Combat;
+
+			auto Bullets = [](const FText& Text)
+			{
+				TArray<FString> Lines;
+				Text.ToString().ParseIntoArrayLines(Lines);
+				FString Out;
+				for (const FString& Line : Lines)
+				{
+					const FString Trimmed = Line.TrimStartAndEnd();
+					if (!Trimmed.IsEmpty()) Out += (Trimmed.StartsWith(TEXT("·")) ? Trimmed : TEXT("· ") + Trimmed) + TEXT("\n");
+				}
+				return Out;
+			};
+
+			FString Kit;
+			Kit += FString::Printf(TEXT("· HP %d · 속도 %d~%d · %s\n"), Stats.MaxHP, Info.Speed.Min, Info.Speed.Max, *Info.DefenseText.ToString());
+			Kit += FString::Printf(TEXT("· 기본 공격 %d~%d (언제나 사용) · 공격카드 강화 몫 %d%%\n"), Basic.Min, Basic.Max, FMath::RoundToInt(Info.CardPower * 100.0f));
+			if (Combat.bUsesMP) Kit += FString::Printf(TEXT("· MP %d로 시작 · 턴마다 +%d · 최대 %d\n"), Combat.StartMP, Combat.MPPerTurn, Combat.MaxMP);
+			if (Combat.StartBlock > 0) Kit += FString::Printf(TEXT("· 방어도 %d로 시작 · 턴 종료마다 +%d\n"), Combat.StartBlock, Combat.BlockPerTurnEnd);
+			else if (Combat.BlockPerTurnEnd > 0) Kit += FString::Printf(TEXT("· 턴 종료마다 방어도 +%d\n"), Combat.BlockPerTurnEnd);
+			if (Combat.CritChanceBonus > 0.0f) Kit += FString::Printf(TEXT("· 치명타 확률 +%d%%\n"), FMath::RoundToInt(Combat.CritChanceBonus * 100.0f));
+			Kit += Bullets(Info.StartPerkText);
+			Kit += FString::Printf(TEXT("· %s %s"), *StartingDeckLabel.ToString(), *DescribeStartingDeck(Info.ClassType));
+
+			TArray<FString> DescLines;
+			Info.Description.ToString().ParseIntoArrayLines(DescLines);
+			const FString Summary = DescLines.Num() > 0 ? DescLines[0] : FString();
+			const FString Mechanics = Bullets(Info.MechanicsText);
+			FString Body = Summary.IsEmpty() ? FString() : Summary + TEXT("\n\n");
+			Body += Mechanics.IsEmpty() ? FString() : FString::Printf(TEXT("%s\n%s\n"), *MechanicsLabel.ToString(), *Mechanics);
+			Body += FString::Printf(TEXT("%s\n%s"), *StartKitLabel.ToString(), *Kit);
+			LongText->SetText(FText::FromString(Body));
 		}
 
 		// 밝게 켜진 회백색 카드는 검은 글씨, 나머지는 흰 글씨
@@ -690,7 +751,12 @@ void UBWClassSelectWidget::RefreshCards()
 		const FLinearColor Ink = !bAvailable ? FLinearColor(0.55f, 0.55f, 0.6f) : (bDark ? FLinearColor(0.08f, 0.08f, 0.1f) : FLinearColor::White);
 		const FLinearColor Shadow(0.0f, 0.0f, 0.0f, bDark ? 0.0f : 0.85f);
 		UTextBlock* TagText = TagTexts.IsValidIndex(i) ? TagTexts[i].Get() : nullptr;
-		UTextBlock* CardTexts[] = { Texts[i], TitleTexts.IsValidIndex(i) ? TitleTexts[i].Get() : nullptr, TagText, LongText };
+		UTextBlock* CardTexts[] = { Texts[i], TitleTexts.IsValidIndex(i) ? TitleTexts[i].Get() : nullptr, TagText };
+		if (LongText)
+		{
+			LongText->SetColorAndOpacity(FLinearColor(0.95f, 0.95f, 0.97f));
+			LongText->SetShadowColorAndOpacity(FLinearColor(0, 0, 0, 0.85f));
+		}
 		for (UTextBlock* Text : CardTexts)
 		{
 			if (!Text) continue;
@@ -781,7 +847,7 @@ FString UBWClassSelectWidget::DescribeStartingDeck(EClassType ClassType) const
 		const int32 Count = Counts[Name];
 		Parts.Add(Count > 1 ? FString::Printf(TEXT("%s ×%d"), *Name, Count) : Name);
 	}
-	return FString::Printf(TEXT("공격 %d · 효과 %d장\n%s"), Attacks, Effects, *FString::Join(Parts, TEXT(", ")));
+	return FString::Printf(TEXT("%d장 (공격 %d · 효과 %d) — %s"), Attacks + Effects, Attacks, Effects, *FString::Join(Parts, TEXT(", ")));
 }
 
 void UBWClassSelectWidget::StartRun()

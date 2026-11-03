@@ -28,6 +28,7 @@ public:
 	UPROPERTY() int32 PlayerINT = 4;
 	UPROPERTY() int32 PlayerFTH = 4;
 	UPROPERTY() int32 PlayerDeckCount = 10;
+	UPROPERTY() int32 SoulBullets = 0;
 
 	// 진행
 	UPROPERTY() int32 CurrentStage = 1;
@@ -48,7 +49,11 @@ public:
 	UPROPERTY() FBWMapBonusState MapBonus;
 	UPROPERTY() int32 PendingCardRemovals = 0;
 	UPROPERTY() bool bActCleared = false;
+	UPROPERTY() int32 PendingStatPoints = 0;
+	UPROPERTY() int32 PlayerDefensePoints = 0;
 	UPROPERTY() int32 AugmentPickedAct = 0;
+	UPROPERTY() int32 AugmentBossPickedAct = 0;
+	UPROPERTY() bool bResumeBattle = false; // 전투 중 저장: 이어하면 그 전투를 다시 한다
 
 	// 판 덱 (보상으로 얻은 카드·강화·삭제가 반영된 덱)
 	UPROPERTY() TArray<FBWRunCard> RunDeck;

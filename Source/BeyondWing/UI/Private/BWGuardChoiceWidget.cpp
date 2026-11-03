@@ -1,4 +1,5 @@
 #include "BeyondWing/UI/Public/BWGuardChoiceWidget.h"
+#include "BeyondWing/UI/Public/BWSkin.h"
 #include "BeyondWing/Character/Public/BWCharacter.h"
 #include "BeyondWing/Combat/Public/BWDuelRules.h"
 #include "Blueprint/WidgetTree.h"
@@ -50,8 +51,9 @@ void UBWGuardChoiceWidget::BuildLayout()
 	Frame->SetPadding(FMargin(0.0f, 2.0f));
 	UBorder* Panel = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), TEXT("Panel"));
 	Panel->SetBrushColor(FLinearColor(0.02f, 0.025f, 0.05f, 0.95f));
-	Panel->SetPadding(FMargin(34.0f, 20.0f, 34.0f, 22.0f));
+	Panel->SetPadding(FMargin(40.0f, 28.0f, 40.0f, 30.0f));
 	Frame->SetContent(Panel);
+	if (BWSkin::StylePanel(Panel)) { Frame->SetBrushColor(FLinearColor::Transparent); Frame->SetPadding(FMargin(0.0f)); }
 	if (UCanvasPanelSlot* PanelSlot = Root->AddChildToCanvas(Frame))
 	{
 		PanelSlot->SetAnchors(FAnchors(0.73f, 0.42f)); // 가운데(전장)를 가리지 않게 오른쪽에
@@ -92,6 +94,13 @@ void UBWGuardChoiceWidget::BuildLayout()
 		Size->SetHeightOverride(Height);
 		UButton* Button = WidgetTree->ConstructWidget<UButton>(UButton::StaticClass());
 		Button->SetBackgroundColor(Tint);
+		if (BWSkin::StyleButton(Button))
+		{
+			FButtonStyle Thin = Button->GetStyle();
+			Thin.SetNormalPadding(FMargin(20.0f, 4.0f));
+			Thin.SetPressedPadding(FMargin(20.0f, 5.0f, 20.0f, 3.0f));
+			Button->SetStyle(Thin);
+		}
 		Button->SetContent(Label);
 		if (UButtonSlot* BSlot = Cast<UButtonSlot>(Label->Slot))
 		{

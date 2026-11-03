@@ -32,14 +32,13 @@ UBWTitleMenuWidget::UBWTitleMenuWidget(const FObjectInitializer& ObjectInitializ
 	: Super(ObjectInitializer)
 {
 	TitleText = FText::FromString(TEXT("BEYOND WING"));
-	SubtitleText = FText::FromString(TEXT("뒤섞인 차원의 탑을 오르다"));
-	ContinueText = FText::FromString(TEXT("이어하기"));
-	StartText = FText::FromString(TEXT("새 게임"));
+	ContinueText = FText::FromString(TEXT("이어서 입탑"));
+	StartText = FText::FromString(TEXT("새로운 입탑"));
 	SettingsText = FText::FromString(TEXT("환경설정"));
 	QuitText = FText::FromString(TEXT("게임 종료"));
 	FooterText = FText::FromString(TEXT("프로토타입"));
-	ConfirmNewGameText = FText::FromString(TEXT("진행 중인 등반이 있습니다.\n새로 시작하면 이전 기록이 사라집니다."));
-	ConfirmYesText = FText::FromString(TEXT("새로 시작"));
+	ConfirmNewGameText = FText::FromString(TEXT("아직 탑 안에 계신 것 같은데요.\n새로 입탑하시면 이전 기록은 B.W 장부에서 지워집니다. 괜찮으시겠어요?"));
+	ConfirmYesText = FText::FromString(TEXT("새로 입탑"));
 	ConfirmNoText = FText::FromString(TEXT("취소"));
 
 	BackdropTexture = TSoftObjectPtr<UTexture2D>(FSoftObjectPath(TEXT("/Game/HUD/Texture/UI/T_UI_TitleBackdrop.T_UI_TitleBackdrop")));
@@ -169,9 +168,12 @@ void UBWTitleMenuWidget::BuildDefaultLayout()
 		DividerSlot->SetHorizontalAlignment(HAlign_Left);
 		DividerSlot->SetPadding(FMargin(4.0f, 8.0f));
 	}
-	UTextBlock* Subtitle = MakeText(19, FLinearColor(0.85f, 0.8f, 0.9f, 0.85f), 100);
-	Subtitle->SetText(SubtitleText);
-	if (UVerticalBoxSlot* SubSlot = TitleColumn->AddChildToVerticalBox(Subtitle)) SubSlot->SetPadding(FMargin(4.0f, 0.0f));
+	if (!SubtitleText.IsEmpty())
+	{
+		UTextBlock* Subtitle = MakeText(19, FLinearColor(0.85f, 0.8f, 0.9f, 0.85f), 100);
+		Subtitle->SetText(SubtitleText);
+		if (UVerticalBoxSlot* SubSlot = TitleColumn->AddChildToVerticalBox(Subtitle)) SubSlot->SetPadding(FMargin(4.0f, 0.0f));
+	}
 	TitleBlock = TitleColumn;
 	if (UVerticalBoxSlot* BlockSlot = Column->AddChildToVerticalBox(TitleColumn)) BlockSlot->SetPadding(FMargin(0.0f, 0.0f, 0.0f, 60.0f));
 
@@ -380,6 +382,15 @@ void UBWTitleMenuWidget::ContinueGame()
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[Title] Continue failed: no usable save"));
 		RefreshContinue();
+		return;
+	}
+	// 전투 중에 저장했으면 빈 지도 레벨을 거치지 않고 바로 그 전투로 간다 (지도가 그려지기 전 화면이 하얗게 비친다)
+	if (GI->bResumeBattle)
+	{
+		GI->bResumeBattle = false;
+		GI->BeginBattleSnapshot();
+		GI->PrepareEncounter(GI->CurrentEncounterType, GI->GetCurrentDimension());
+		UGameplayStatics::OpenLevel(GetWorld(), TEXT("/Game/System/Level/BattleLevel"));
 		return;
 	}
 	UGameplayStatics::OpenLevel(GetWorld(), NewGameLevel);

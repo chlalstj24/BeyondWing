@@ -1,5 +1,8 @@
 #include "BeyondWing/UI/Public/BWDuelWidget.h"
+#include "BeyondWing/UI/Public/BWSkin.h"
 #include "Blueprint/WidgetTree.h"
+#include "HAL/IConsoleManager.h"
+#include "GameFramework/PlayerController.h"
 #include "Components/Border.h"
 #include "Components/CanvasPanel.h"
 #include "Components/CanvasPanelSlot.h"
@@ -33,15 +36,23 @@ void UBWDuelWidget::BuildDefaultLayout()
 	UCanvasPanel* Root = WidgetTree->ConstructWidget<UCanvasPanel>(UCanvasPanel::StaticClass(), TEXT("Root"));
 	WidgetTree->RootWidget = Root;
 
-	// 화면 가운데를 가로지르는 어두운 띠
+	// 화면 가운데를 가로지르는 옅은 어둠 + 그 위의 석판 (큰 판이라 모서리 장식 석판)
+	UBorder* Shade = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), TEXT("Shade"));
+	Shade->SetBrushColor(FLinearColor(0.0f, 0.0f, 0.0f, 0.45f));
+	if (UCanvasPanelSlot* ShadeSlot = Root->AddChildToCanvas(Shade))
+	{
+		ShadeSlot->SetAnchors(FAnchors(0.0f, 0.5f, 1.0f, 0.5f));
+		ShadeSlot->SetAlignment(FVector2D(0.5f, 0.5f));
+		ShadeSlot->SetOffsets(FMargin(0.0f, 0.0f, 0.0f, 300.0f));
+	}
 	UBorder* Band = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), TEXT("Band"));
-	Band->SetBrushColor(FLinearColor(0.0f, 0.0f, 0.0f, 0.78f));
-	Band->SetPadding(FMargin(40.0f, 18.0f));
+	if (!BWSkin::StylePanel(Band)) Band->SetBrushColor(FLinearColor(0.0f, 0.0f, 0.0f, 0.78f));
+	Band->SetPadding(FMargin(46.0f, 28.0f, 46.0f, 30.0f));
 	if (UCanvasPanelSlot* BandSlot = Root->AddChildToCanvas(Band))
 	{
-		BandSlot->SetAnchors(FAnchors(0.0f, 0.5f, 1.0f, 0.5f));
+		BandSlot->SetAnchors(FAnchors(0.5f, 0.5f));
 		BandSlot->SetAlignment(FVector2D(0.5f, 0.5f));
-		BandSlot->SetOffsets(FMargin(0.0f, 0.0f, 0.0f, 230.0f));
+		BandSlot->SetAutoSize(true);
 	}
 
 	UVerticalBox* Column = WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass(), TEXT("Column"));
@@ -66,8 +77,13 @@ void UBWDuelWidget::BuildDefaultLayout()
 	{
 		USizeBox* Box = WidgetTree->ConstructWidget<USizeBox>(USizeBox::StaticClass(), *FString::Printf(TEXT("%sBox"), Prefix));
 		Box->SetWidthOverride(340.0f);
+		// 양쪽 칸: 장식 없이 석판색 + 은빛 테두리
+		UBorder* Cell = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), *FString::Printf(TEXT("%sCell"), Prefix));
+		Cell->SetBrush(BWSkin::Plain(FLinearColor(0.1f, 0.12f, 0.15f, 0.92f), FLinearColor(0.68f, 0.7f, 0.74f, 0.6f), 1.5f));
+		Cell->SetPadding(FMargin(12.0f, 10.0f));
+		Box->SetContent(Cell);
 		UVerticalBox* SideColumn = WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass(), *FString::Printf(TEXT("%sColumn"), Prefix));
-		Box->SetContent(SideColumn);
+		Cell->SetContent(SideColumn);
 		OutName = MakeText(*FString::Printf(TEXT("TXT_%sName"), Prefix), 20, ETextJustify::Center);
 		OutSkill = MakeText(*FString::Printf(TEXT("TXT_%sSkill"), Prefix), 15, ETextJustify::Center);
 		OutRoll = MakeText(*FString::Printf(TEXT("TXT_%sRoll"), Prefix), 64, ETextJustify::Center);
@@ -100,12 +116,14 @@ void UBWDuelWidget::BuildDefaultLayout()
 	Row->AddChildToHorizontalBox(MakeSide(TEXT("Right"), TXT_RightName, TXT_RightSkill, TXT_RightRoll));
 
 	TXT_Result = MakeText(TEXT("TXT_Result"), 24, ETextJustify::Center);
+	TXT_Result->SetWrapTextAt(900.0f); // 판 폭(양쪽 칸 + 가운데) 안에서 줄바꿈
 	if (UVerticalBoxSlot* ResultSlot = Column->AddChildToVerticalBox(TXT_Result))
 	{
 		ResultSlot->SetHorizontalAlignment(HAlign_Center);
 		ResultSlot->SetPadding(FMargin(0.0f, 6.0f, 0.0f, 0.0f));
 	}
 	TXT_FinalNote = MakeText(TEXT("TXT_FinalNote"), 18, ETextJustify::Center);
+	TXT_FinalNote->SetWrapTextAt(900.0f);
 	TXT_FinalNote->SetColorAndOpacity(BWDuelUI::Dim);
 	if (UVerticalBoxSlot* NoteSlot = Column->AddChildToVerticalBox(TXT_FinalNote))
 	{
@@ -126,10 +144,10 @@ void UBWDuelWidget::PlayDuel(const FBWDuelPresentation& Data, TFunction<void()> 
 	if (TXT_RightSkill) TXT_RightSkill->SetText(FText::FromString(FString::Printf(TEXT("%s  [%d~%d]"), *Data.RightSkill, Data.RightRange.Min, Data.RightRange.Max)));
 	if (TXT_Result)
 	{
-		TXT_Result->SetText(FText::FromString(Data.bLeftRolls ? TEXT("합!") : TEXT("적의 공격!")));
+		TXT_Result->SetText(FText::FromString(Data.bLeftRolls ? TEXT("격돌!") : TEXT("적의 공격!")));
 		TXT_Result->SetColorAndOpacity(BWDuelUI::White);
 	}
-	if (TXT_FinalNote) TXT_FinalNote->SetText(FText::GetEmpty());
+	if (TXT_FinalNote) TXT_FinalNote->SetText(FText::FromString(TEXT(" "))); // 빈 줄도 높이를 잡아 판 크기가 변하지 않게
 	if (TXT_Versus) TXT_Versus->SetRenderOpacity(1.0f);
 	if (TXT_Final) TXT_Final->SetRenderOpacity(0.0f);
 
@@ -182,6 +200,21 @@ FString UBWDuelWidget::MakeFinalNote() const
 	return Note;
 }
 
+namespace BWDuelInput
+{
+	static constexpr float ResultShowTime = 1.5f; // 결과 한 장면이 자동으로 넘어가는 시간
+	static constexpr float MinInputGap = 0.5f;    // 결과가 나온 뒤 이 시간 안의 입력은 무시 (중복 입력 방지)
+}
+
+bool UBWDuelWidget::HandleAdvanceInput()
+{
+	if (CurrentPhase < 0) return false;
+	if (CurrentPhase < 2) EnterPhase(2);
+	// 다음 틱에서 넘어가게 한다 (입력 처리 도중에 위젯을 닫지 않는다)
+	else if (PhaseTime >= BWDuelInput::MinInputGap) PhaseTime = BWDuelInput::ResultShowTime;
+	return true;
+}
+
 void UBWDuelWidget::EnterPhase(int32 NewPhase)
 {
 	CurrentPhase = NewPhase;
@@ -211,7 +244,7 @@ void UBWDuelWidget::EnterPhase(int32 NewPhase)
 		if (Current.Winner < 0)
 		{
 			SetRollColors(BWDuelUI::Dim, BWDuelUI::Dim);
-			Result = TEXT("3연속 동점 - 피해 없음");
+			Result = Current.bGuardHeld ? TEXT("막혔다 - 피해 없음") : TEXT("3연속 동점 - 피해 없음");
 		}
 		else if (!Current.bLeftRolls)
 		{
@@ -302,7 +335,7 @@ void UBWDuelWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 		break;
 	case 2:
 		UpdateLandPop();
-		if (PhaseTime >= HoldTime)
+		if (PhaseTime >= BWDuelInput::ResultShowTime)
 		{
 			// 동점이면 피해가 없으니 바로 닫는다
 			if (Current.Winner < 0) Finish();
@@ -311,7 +344,37 @@ void UBWDuelWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 		break;
 	case 3:
 		UpdateFinalSlide();
-		if (PhaseTime >= FinalSlideTime + FinalHoldTime) Finish();
+		if (PhaseTime >= BWDuelInput::ResultShowTime) Finish();
 		break;
 	}
 }
+
+// 화면 확인용: bw.Duel [enemy] — 예시 격돌을 한 번 재생한다 (전투 결과와 무관)
+static FAutoConsoleCommandWithWorldAndArgs GBWDuelPreviewCommand(TEXT("bw.Duel"), TEXT("화면 확인용 격돌 연출 (인자 enemy: 적의 공격)"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
+	{
+		APlayerController* PC = World ? World->GetFirstPlayerController() : nullptr;
+		UBWDuelWidget* Widget = PC ? CreateWidget<UBWDuelWidget>(PC, UBWDuelWidget::StaticClass()) : nullptr;
+		if (!Widget) return;
+		const bool bEnemy = Args.Num() > 0 && Args[0] == TEXT("enemy");
+		FBWDuelPresentation Data;
+		Data.LeftName = TEXT("매직 캐스터");
+		Data.LeftSkill = bEnemy ? TEXT("마나 가드") : TEXT("불꽃 화살");
+		Data.LeftRange = { 2, 8 };
+		Data.LeftRoll = 7;
+		Data.bLeftRolls = !bEnemy;
+		Data.RightName = TEXT("석상 파수꾼");
+		Data.RightSkill = TEXT("내려찍기");
+		Data.RightRange = { 1, 6 };
+		Data.RightRoll = 4;
+		Data.Winner = bEnemy ? 1 : 0;
+		Data.Damage = bEnemy ? 4 : 7;
+		Data.bCritical = !bEnemy;
+		Data.bPlayerIsHit = bEnemy;
+		Data.DefenseText = TEXT("-2");
+		Data.DefenseReduced = 2;
+		Data.FinalDamage = bEnemy ? 2 : 7;
+		Data.BlockAbsorbed = bEnemy ? 1 : 0;
+		Data.HPLoss = bEnemy ? 1 : 0;
+		Widget->PlayDuel(Data, nullptr);
+	}));

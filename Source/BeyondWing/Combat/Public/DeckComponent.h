@@ -90,10 +90,13 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Combat|Action") EBWCardUseResult CanUseCard(int32 HandIndex, int32 AvailableMP) const;
 	UFUNCTION(BlueprintPure, Category = "Combat|Action") bool HasAttackCardInHand() const;
+	int32 GetMPCost(const FBWCardData& Card) const;
 	UFUNCTION(BlueprintPure, Category = "Combat|Action") bool CanOpenDuel() const { return DuelsOpenedThisTurn < MaxDuelsPerTurn; }
 
 	// 한도와 MP를 확인하고 카드를 사용한다 (MP는 소유 캐릭터에서 차감). 사용한 카드는 버린 덱으로
 	UFUNCTION(BlueprintCallable, Category = "Combat|Action") bool UseCard(int32 HandIndex, FBWCardData& OutCardData);
+	// 방금 버린 카드를 손패로 되돌린다 (환영 무기)
+	bool ReturnDiscardedCard(const FString& CardName);
 
 	// 합을 열었음을 기록한다 (턴당 MaxDuelsPerTurn회)
 	UFUNCTION(BlueprintCallable, Category = "Combat|Action") void NotifyDuelOpened() { ++DuelsOpenedThisTurn; }

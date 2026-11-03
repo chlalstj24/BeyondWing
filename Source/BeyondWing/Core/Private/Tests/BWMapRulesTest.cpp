@@ -56,6 +56,19 @@ bool FBWMapGenerateTest::RunTest(const FString& Parameters)
 		}
 		TestTrue(TEXT("1~2 rifts per act"), Rifts >= UBWMapRules::MinRiftsPerAct && Rifts <= UBWMapRules::MaxRiftsPerAct);
 
+		// 줄마다 무작위 휴식 2개 이하, 휴식 연속 없음 (15칸 고정 휴식 포함)
+		for (int32 Row = 0; Row < 4; ++Row)
+		{
+			int32 RandomRests = 0;
+			for (int32 Step = 0; Step < UBWMapRules::StepsPerAct; ++Step)
+			{
+				const bool bRest = Map[Step].Nodes[Row].NodeType == EMapNodeType::Rest;
+				if (bRest && Step != UBWMapRules::RestStep) ++RandomRests;
+				if (bRest && Step > 0) TestFalse(TEXT("no rest right after rest"), Map[Step - 1].Nodes[Row].NodeType == EMapNodeType::Rest);
+			}
+			TestTrue(TEXT("random rests per row"), RandomRests <= UBWMapRules::MaxRandomRestsPerRow);
+		}
+
 		// 같은 경계에서 3칸 연속 닫힘 없음
 		for (int32 Boundary = 0; Boundary < 3; ++Boundary)
 		{
@@ -137,6 +150,28 @@ bool FBWMapPenaltyTest::RunTest(const FString& Parameters)
 	const FBWCardData Up = UBWMapRules::MakeUpgradedCard(Card);
 	TestTrue(TEXT("upgraded attack range"), Up.SkillMin == 4 && Up.SkillMax == 8 && Up.CardName == TEXT("화염파+"));
 	TestEqual(TEXT("upgrade twice does nothing"), UBWMapRules::MakeUpgradedCard(Up).SkillMax, 8);
+
+	// 효과카드: 회피 같은 확률 수치도 오르고 설명 숫자가 바뀐다 (엄폐)
+	FBWCardData Cover;
+	Cover.CardName = TEXT("엄폐");
+	Cover.CardKind = ECardKind::Effect;
+	Cover.EffectEvadeBonus = 0.25f;
+	Cover.Description = TEXT("이번 적 턴 회피 +25%.");
+	const FBWCardData CoverUp = UBWMapRules::MakeUpgradedCard(Cover);
+	TestTrue(TEXT("cover evade 35%"), FMath::IsNearlyEqual(CoverUp.EffectEvadeBonus, 0.35f) && CoverUp.Description == TEXT("이번 적 턴 회피 +35%."));
+	// 방어도 10에서 '방어도 1'을 잘못 바꾸지 않는다
+	FBWCardData Wall;
+	Wall.CardKind = ECardKind::Effect;
+	Wall.EffectBlock = 1;
+	Wall.EffectDraw = 2;
+	Wall.Description = TEXT("카드 2장 뽑기. 방어도 1.");
+	const FBWCardData WallUp = UBWMapRules::MakeUpgradedCard(Wall);
+	TestEqual(TEXT("block+draw text"), WallUp.Description, FString(TEXT("카드 3장 뽑기. 방어도 4.")));
+	// 오를 수치가 없는 카드는 카드 1장 뽑기가 붙는다
+	FBWCardData Load;
+	Load.CardKind = ECardKind::Effect;
+	Load.Description = TEXT("장전.");
+	TestEqual(TEXT("no-number card draws 1"), UBWMapRules::MakeUpgradedCard(Load).Description, FString(TEXT("장전. 카드 1장 뽑기.")));
 	return true;
 }
 

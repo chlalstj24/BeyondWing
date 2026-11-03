@@ -21,6 +21,10 @@ public:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) UProgressBar* PB_HP;
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) UTextBlock* TXT_HP;
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) UTextBlock* TXT_Status;
+	// [추가] 공격을 고르는 동안 적 머리 위에 뜨는 격돌 예상 (승률 · 이기면 주는 피해 · 지면 받는 피해)
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) class UBorder* BOX_Forecast;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) UTextBlock* TXT_ForecastChance;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) UTextBlock* TXT_ForecastDetail;
 
 	// 잔상이 따라 줄어드는 속도 (초당 비율)와 시작 전 대기
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Status") float LagSpeed = 0.9f;
@@ -37,6 +41,7 @@ protected:
 
 private:
 	void BuildDefaultLayout();
+	void UpdateForecast(const ABWCharacter* Char);
 	TWeakObjectPtr<ABWCharacter> OwnerChar;
 	float ShownLag = -1.0f;
 	float LagWait = 0.0f;

@@ -49,6 +49,28 @@ FBWDiceRange UBWStatusRules::ApplyWeak(const FBWDiceRange& SkillRange)
 	return FBWDiceRange(FMath::Min(SkillRange.Min, Max), Max);
 }
 
+FString UBWStatusRules::DescribeStatusDetails(const TArray<FBWStatusInstance>& Statuses)
+{
+	TArray<FString> Lines;
+	for (const FBWStatusInstance& Status : Statuses)
+	{
+		FString Name, Effect;
+		switch (Status.Type)
+		{
+		case EStatusEffect::Stun:       Name = TEXT("기절"); Effect = TEXT("다음 턴 이동·격돌 불가"); break;
+		case EStatusEffect::Slow:       Name = TEXT("둔화"); Effect = TEXT("속도 최댓값 -1"); break;
+		case EStatusEffect::Weak:       Name = TEXT("약화"); Effect = TEXT("공격 최댓값 -20%"); break;
+		case EStatusEffect::Vulnerable: Name = TEXT("취약"); Effect = TEXT("받는 피해 +25%"); break;
+		case EStatusEffect::Bleed:      Name = TEXT("출혈"); Effect = FString::Printf(TEXT("턴이 끝날 때 피해 %d"), Status.Value); break;
+		case EStatusEffect::Confusion:  Name = TEXT("혼란"); Effect = TEXT("두 번 굴려 낮은 값"); break;
+		case EStatusEffect::Focus:      Name = TEXT("집중"); Effect = TEXT("두 번 굴려 높은 값"); break;
+		default: continue;
+		}
+		Lines.Add(FString::Printf(TEXT("%s %d턴: %s"), *Name, Status.RemainingTurns, *Effect));
+	}
+	return FString::Join(Lines, TEXT("\n"));
+}
+
 FString UBWStatusRules::DescribeStatuses(const TArray<FBWStatusInstance>& Statuses)
 {
 	TArray<FString> Parts;

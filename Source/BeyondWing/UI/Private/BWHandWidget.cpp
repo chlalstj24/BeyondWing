@@ -102,6 +102,7 @@ void UBWHandWidget::RefreshHand(const TArray<FBWCardData>& InHandCards)
 			{
 				const int32 Reach = NewCard->CardData.CardKind == ECardKind::Attack ? FMath::Clamp(NewCard->CardData.Range, 1, BWRangeArt::MaxReach) : 0;
 				NewCard->CardData.AboveImage = TSoftObjectPtr<UTexture2D>(FSoftObjectPath(FString::Printf(TEXT("%s/T_CardRange_%d.T_CardRange_%d"), BWRangeArt::Folder, Reach, Reach)));
+				if (UTexture2D* Art = NewCard->CardData.AboveImage.LoadSynchronous()) RangeArtKeep.AddUnique(Art);
 			}
 			NewCard->HandIndex = i;
 			NewCard->OwningHand = this;
@@ -119,13 +120,7 @@ void UBWHandWidget::RefreshHand(const TArray<FBWCardData>& InHandCards)
 			CurrentTranslations.Add(FVector2D::ZeroVector);
 			CurrentRotations.Add(0.0f);
 			CurrentScales.Add(1.0f);
-			NewCard->K2_InitCardUI();
-			// 겔레온에서 고르지 않은 종류의 카드는 흐리게 (써지지는 않고 안내만 뜬다)
-			if (const ABWPlayerController* PC = Cast<ABWPlayerController>(GetOwningPlayer()); PC && !UBWDimensionRules::CanUseCard(PC->Battlefield, NewCard->CardData))
-			{
-				// 카드 그림이 색 보정을 받지 않는 재질이라 어둡게 대신 반투명으로 표시한다
-				NewCard->SetRenderOpacity(0.45f);
-			}
+			NewCard->InitCardUI();
 		}
 	}
 	UpdateCardLayout();
@@ -172,6 +167,12 @@ void UBWHandWidget::UpdateCardLayout()
 		Pos.X = FMath::Cos(RadAngle) * ArcRadius;
 		Pos.Y = FMath::Sin(RadAngle) * ArcRadius + ArcRadius; 
 		Pos += HandCenterOffset;
+
+		// 빙의로 마탄이 강제되면 다른 공격카드는 흐리게
+		const ABWPlayerController* Owner = Cast<ABWPlayerController>(GetOwningPlayer());
+		const FBWCardData& Shown = CardWidgets[i]->CardData;
+		const bool bLocked = Owner && Owner->IsForcedToMagicBullet() && Shown.CardKind == ECardKind::Attack && Shown.Special != EBWCardSpecial::MagicBullet;
+		CardWidgets[i]->SetRenderOpacity(bLocked ? 0.45f : 1.0f);
 
 		if (UCanvasPanelSlot* CardSlot = Cast<UCanvasPanelSlot>(CardWidgets[i]->Slot))
 		{

@@ -34,6 +34,8 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "BW Input")
 	void CancelSelection();
+	// [추가] Esc: 대상 고르기·이동 모드를 취소했으면 true
+	bool CancelBattleSelection();
 
 	void SetHandWidget(class UBWHandWidget* InWidget) { HandWidget = InWidget; }
 	class UBWHandWidget* GetHandWidget() const { return HandWidget; }
@@ -48,6 +50,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW Feel") float HitShakeStrength = 5.0f;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW Feel") float CritShakeStrength = 11.0f;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW Feel") float ShakeDuration = 0.25f;
+
+	// [추가] 전투 카메라: 레벨 카메라에서 보는 방향 반대로 PullBack, 수평으로 BackShift만큼 물러나 맨 아랫줄이 손패 위로 보이게 한다.
+	// WASD로 판 평면 위에서 앞뒤·좌우 각각 ±PanLimit 안에서만 움직인다 (맨 아랫줄이 온전히 보일 만큼)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW Camera") float CameraPullBack = 250.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW Camera") float CameraBackShift = 110.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW Camera") float CameraPanLimit = 100.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW Camera") float CameraPanSpeed = 400.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW Combat")
 	bool bIsSkillTargetingMode;
@@ -81,6 +90,43 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "BW Combat")
 	bool OpenDuel(ABWCharacter* Enemy, int32 HandIndex);
 
+	// [추가] 삶의 방식 카드의 사용 조건 (장전·들림·격노·강림·질풍노도·이번 턴 합 불가). 못 쓰면 이유를 돌려준다
+	bool CanUseLifestyleCard(const FBWCardData& Card, FString& OutReason) const;
+	// [추가] 내가 연 합이 끝난 뒤 삶의 방식 효과 (장전·마탄·철의 의지·철혈·흡혈 등)
+	void ApplyLifestyleAfterDuel(ABWCharacter* PlayerChar, ABWCharacter* Enemy, const FBWCardData& AttackCard, const FBWDuelResult& Result, const FBWPlannedHit& Hit);
+
+	// [추가] 국가 기믹까지 반영한 양쪽 굴림 조건 (내 공격 / 적)
+	FBWDuelSide MakeFieldAttackSide(ABWCharacter* Me, const FBWCardData* Card, const ABWCharacter* Enemy) const;
+	// [추가] 마우스가 이 적 위에 있는가 (머리 위 표시를 자세히 보여 준다)
+	bool IsEnemyHovered(const ABWCharacter* Enemy) const;
+	// [추가] 이펙트를 순간적으로 재생하고 끊는다 (원본 Niagara가 길어 잔상이 오래 남는다)
+	// 빙의 중이고 패에 마탄이 있으면 마탄만 쓸 수 있다 (기본 공격 포함 다른 공격 금지)
+	bool IsForcedToMagicBullet() const;
+	void PreviewAllMiracles(); // 콘솔 bw.Miracles
+	void SetMiracleHUDHidden(bool bHideHUD);
+	bool bMiracleHUDHidden = false;
+	ESlateVisibility MiracleHUDVisibility[2] = { ESlateVisibility::Visible, ESlateVisibility::Visible };
+	FString DescribePlayerDefense(const ABWCharacter* PlayerChar) const;
+	// 내 공격 칸이 이 적의 공격이 닿는 거리 밖인가: 져도 피해를 받지 않는다
+	bool IsOutOfEnemyReach(const ABWCharacter* Enemy) const;
+	static void PlayShortNiagara(UWorld* World, class UNiagaraSystem* System, const FVector& Location, float EffectScale = 0.45f, float LifeSeconds = 0.3f);
+
+	// [추가] 세트 3개의 사건 (세트마다 판 위에서 눈에 보이는 일). 캐릭터 쪽에서 부른다
+	void OnSetHeal(int32 Healed);
+	void OnSetSelfDamage(int32 Amount);
+	void OnSetDebuffed(EStatusEffect Type, int32 Duration, int32 Value);
+	bool HasSet(EBWAugmentSet Set, int32 Count) const;
+	ABWCharacter* NearestEnemy() const;
+	void SetEventHit(EBWAugmentSet Set, ABWCharacter* Target, int32 Damage, const TCHAR* Label);
+	// [추가] 내 공격을 그대로 따라 하는 반격 (본뜨기)
+	FBWDuelSide MakeCounterSide(const ABWCharacter* Enemy, const FBWDuelSide& Mine) const;
+	const ABWCharacter* GetHoveredEnemy() const;
+	FBWDuelSide MakeFieldEnemySide(const ABWCharacter* Enemy, int32 Advance = 0, bool bCounter = false) const;
+
+	// [추가] 지금 고른(집은·대상 고르는 중인) 공격으로 이 적과 격돌하면 어떻게 될지. 보여 줄 때가 아니면 false
+	// OutLabel = "기본 공격 + 빛의 창", OutWinHP = 이기면 적 HP가 실제로 깎이는 범위(방어도 뒤), OutLoseHP = 지면 내가 받는 범위(방어 뒤)
+	bool GetDuelForecast(const ABWCharacter* Enemy, FBWDuelForecast& Out, FString& OutLabel, FBWDiceRange& OutWinHP, FBWDiceRange& OutLoseHP) const;
+
 	// 상하좌우로 맞닿은 살아 있는 적
 	UFUNCTION(BlueprintCallable, Category = "BW Combat")
 	TArray<ABWCharacter*> GetAdjacentEnemies();
@@ -100,21 +146,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "BW Combat|Dimension")
 	void SetBattlefield(EDimensionType Dimension, bool bOverloaded);
 
-	// 겔레온: 효과카드를 쓸지 고른다 (쓰면 공격카드는 처음 쓴 1종만, 기본 공격은 언제나). 확정 전까지만 바꿀 수 있다
-	UFUNCTION(BlueprintCallable, Category = "BW Combat|Dimension")
-	bool ChooseGeleonMode(bool bUseEffects);
-
-	// 겔레온 전투 시작 화면에서 고른 방식을 확정하고 첫 턴을 시작한다
-	UFUNCTION(BlueprintCallable, Category = "BW Combat|Dimension")
-	bool ConfirmGeleonMode(bool bUseEffects);
-
-	// 손패에 지금 쓸 수 있는 공격카드가 있는지 (겔레온 제한 반영)
+	// 손패에 지금 쓸 수 있는 공격카드가 있는지
 	UFUNCTION(BlueprintPure, Category = "BW Combat|Dimension")
 	bool HasUsableAttackCardInHand() const;
-
-	// 비워 두면 C++ 기본 위젯(UBWGeleonChoiceWidget)이 코드로 화면을 만든다
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW Combat|Dimension")
-	TSubclassOf<class UBWGeleonChoiceWidget> GeleonChoiceWidgetClass;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW Combat")
 	TSubclassOf<ABWCharacter> CharacterClassToSpawn;
@@ -201,6 +235,8 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "BW Input")
 	AGridTile* GetTileUnderCursor();
 
+	friend class UBWAutoPlayer;
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
@@ -243,7 +279,6 @@ private:
 	FBWPlannedHit PlanDuelHit(ABWCharacter* Target, int32 Damage, bool bPlayerDeals, int32 ShieldMP = 0);
 	void FillHitPresentation(FBWDuelPresentation& Show, const FBWPlannedHit& Hit, bool bPlayerIsHit) const;
 	void ShowDuel(const FBWDuelPresentation& Data, TFunction<void()> OnFinished);
-	FString DescribePlayerDefense(const ABWCharacter* PlayerChar) const;
 
 	UPROPERTY() class UBWDuelWidget* DuelWidget = nullptr;
 
@@ -257,11 +292,81 @@ private:
 	float ShakeTimeLeft = 0.0f;
 	float ShakeTotalTime = 0.0f;
 	float ShakeStrength = 0.0f;
-	FVector ShakeHome = FVector::ZeroVector;
+
+	// [추가] 카메라 기준 위치(물러난 뒤) + WASD 이동량(앞뒤 X, 좌우 Y). 흔들림은 이 위에 더해진다
+	FVector CameraHome = FVector::ZeroVector;
+	FVector2D CameraPan = FVector2D::ZeroVector;
+	FVector GetCameraBaseLocation() const;
+	void UpdateCameraPan(float DeltaTime);
 
 	// [추가] "내 턴 / 적 턴" 띠
 	void ShowTurnBanner(const FString& Title, const FString& Sub, const FLinearColor& Accent);
+	// 세트 4개 기적: 전용 연출과 함께 적 전체를 친다 (같은 세트는 턴당 한 번)
+	void TriggerMiracle(EBWAugmentSet Set, int32 Damage);
+	void QueueMiracleShow(EBWAugmentSet Set, int32 Damage = 0);
+	// 기적의 탄 하나: From에서 To로 날아가 터지고, 맞으면 피해가 그때 들어간다
+	enum class EMiraclePath : uint8 { Straight, Arc, Spiral };
+	struct FMiracleShot
+	{
+		double StartAt = 0.0;
+		float Duration = 0.4f;
+		FVector From = FVector::ZeroVector;
+		FVector To = FVector::ZeroVector;
+		EMiraclePath Path = EMiraclePath::Straight;
+		class UNiagaraSystem* Trail = nullptr;
+		class UNiagaraSystem* Impact = nullptr;
+		float TrailScale = 0.5f;
+		float ImpactScale = 0.6f;
+		TWeakObjectPtr<class UNiagaraComponent> Comp;
+		TWeakObjectPtr<ABWCharacter> HitTarget;
+		int32 Damage = 0;
+		bool bStun = false;
+		bool bStarted = false;
+	};
+	TArray<FMiracleShot> MiracleShots;
+	void BuildMiracleShots(EBWAugmentSet Set, int32 Damage);
+	// 3박자 기적(예고 → 일격 → 여운): 거대한 물체를 세우고 움직인다. 만든 세트면 연출 길이(초), 아니면 0
+	float BuildMiracleScene(EBWAugmentSet Set, int32 Damage, const FLinearColor& Color, float TimeScale);
+	struct FMiracleProp
+	{
+		TWeakObjectPtr<AActor> Actor;
+		double StartAt = 0.0;
+		float Duration = 0.5f;
+		FVector FromLoc = FVector::ZeroVector, ToLoc = FVector::ZeroVector;
+		FVector FromScale = FVector::OneVector, ToScale = FVector::OneVector;
+		uint8 Ease = 0; // 0 고르게, 1 빨리 시작해 감속, 2 천천히 시작해 가속
+		float SpinYaw = 0.0f; // 움직이는 동안 더 도는 각도
+		FRotator StartRot = FRotator::ZeroRotator;
+		float ArcHeight = 0.0f; // 포물선 높이 (포탄)
+		bool bDestroyAtEnd = false;
+	};
+	TArray<FMiracleProp> MiracleProps;
+	TArray<TPair<double, TFunction<void()>>> MiracleEvents;
+	AActor* SpawnMiracleProp(class UStaticMesh* Mesh, class UMaterialInterface* Material, const FVector& Location, const FRotator& Rotation, const FVector& Scale);
+	void UpdateMiracleProps();
+	// 화면 분위기(세트 색으로 물듦)와 카메라 당김
+	UPROPERTY() class APostProcessVolume* MiracleVolume = nullptr;
+	double MoodStart = -1.0, MoodEnd = -1.0;
+	FLinearColor MoodColor = FLinearColor::White;
+	double ZoomAt = -1.0;
+	float BaseFOV = -1.0f;
+	float LastMiracleLength = 2.3f;
+	float MiraclePull = 0.0f;       // 기적 동안 카메라를 뒤로 빼는 정도(0~1)
+	float MiraclePullDistance = 0.0f; // 이번 기적에서 뺄 거리
+	TSet<int32> MiraclesShownFull;
+	void UpdateMiracleShots();
+	void PlayNextMiracle();
+	TArray<TFunction<void()>> MiracleQueue;
+	bool bMiraclePlaying = false;
+	UPROPERTY() class UBWMiracleWidget* MiracleWidget = nullptr;
+	TSet<int32> MiraclesThisTurn;
 	UPROPERTY() class UBWTurnBannerWidget* TurnBannerWidget = nullptr;
+
+public:
+	// [추가] 전투가 끝나면(GridManager) 결과 화면을 띄우고, 넘기면 지도(승리) / 타이틀(패배)로 간다
+	void ShowBattleResult(bool bVictory);
+private:
+	UPROPERTY() class UBWBattleResultWidget* BattleResultWidget = nullptr;
 
 	// [추가] 전투 시작 때 카드·적 이펙트를 미리 불러 둔다 (처음 쓸 때 멈칫하지 않게)
 	void PreloadCombatAssets();
@@ -285,8 +390,6 @@ private:
 	bool bReachPreviewShown = false;
 	void ResolvePushAfterDuel(ABWCharacter* Pusher, ABWCharacter* Target, bool bPusherIsPlayer);
 	void InitBattlefieldFromGameInstance();
-	void OpenGeleonChoice();
-	bool bAwaitingGeleonChoice = false;
 	void ReflectThorns(ABWCharacter* Enemy, int32 DamageTaken);
 	void PlayCardUnusableFeedback(const FString& Reason);
 

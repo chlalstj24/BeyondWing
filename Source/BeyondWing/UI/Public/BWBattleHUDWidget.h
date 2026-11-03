@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
 #include "BeyondWing/Core/Public/BWTypes.h"
+#include "Styling/SlateTypes.h"
 #include "BWBattleHUDWidget.generated.h"
 
 class UTextBlock;
@@ -126,6 +127,10 @@ public:
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) UTextBlock* TXT_PlayerStats;
 
+	// [추가] 코드로 다시 짠 HUD: 왼쪽 위 삶의 방식 판(이름·HP·고유 자원·능력치), 오른쪽 위 골드·차원 판,
+	// 왼쪽 아래 덱 더미·오른쪽 아래 버린 카드 더미, 오른쪽 버튼 줄. false면 디자이너 화면 그대로
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "HUD") bool bUseCodeLayout = true;
+
 protected:
 	virtual void NativeConstruct() override;
 	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
@@ -157,14 +162,30 @@ private:
 	UPROPERTY() TObjectPtr<UImage> PromptIcon;        // 왼쪽 마름모
 	EBWPromptStyle PromptStyle = EBWPromptStyle::Info;
 	float PromptAge = 0.0f;      // 문구가 바뀐 뒤 지난 시간
+	bool bPromptSkinned = false;
 	float PromptFadeOut = -1.0f; // 사라지는 중이면 0~0.25
 	UPROPERTY() TObjectPtr<UWidget> AttackPanel;
 	UPROPERTY() TObjectPtr<UImage> AttackAccent;
 	// [추가] 왼쪽 아래 '마나' 칸 (MP를 쓰는 삶의 방식만): 보유 MP 숫자 + 칸 막대 + 가드 효율
 	void UpdateManaPanel(float DeltaTime);
 	UPROPERTY() TObjectPtr<UWidget> ManaPanel;
+	UPROPERTY() TObjectPtr<UTextBlock> TXT_ManaTitle;
 	UPROPERTY() TObjectPtr<UTextBlock> TXT_ManaValue;
 	UPROPERTY() TObjectPtr<UTextBlock> TXT_ManaDetail;
+
+	// [추가] 방어도: HP 바가 푸르게 바뀌고, HP 바 왼쪽 끝에 방패 모양과 수치 (슬레이 더 스파이어식)
+	UPROPERTY(EditAnywhere, Category = "BW HUD|Block") FLinearColor BlockBarColor = FLinearColor(0.22f, 0.5f, 1.0f, 1.0f);
+	UPROPERTY(EditAnywhere, Category = "BW HUD|Block") float BlockBadgeSize = 54.0f;
+	UPROPERTY(EditAnywhere, Category = "BW HUD|Block") TSoftObjectPtr<UTexture2D> BlockShieldTexture = TSoftObjectPtr<UTexture2D>(FSoftObjectPath(TEXT("/Game/HUD/Texture/UI/T_UI_Shield.T_UI_Shield")));
+	UPROPERTY() TObjectPtr<UWidget> BlockBadge;
+	UPROPERTY() TObjectPtr<UTextBlock> TXT_BlockValue;
+	FProgressBarStyle OriginalHPBarStyle;
+	FLinearColor OriginalHPFillColor = FLinearColor::White;
+	bool bHPBarBlue = false;
+	int32 ShownBlock = -1;
+	float BlockPulse = 0.0f;
+	void BuildBlockBadge();
+	void UpdateBlockDisplay(int32 Block, float DeltaTime);
 	UPROPERTY() TObjectPtr<UHorizontalBox> ManaCellRow;
 	UPROPERTY() TArray<TObjectPtr<UImage>> ManaCells;
 	int32 ShownMP = -1;
@@ -172,4 +193,45 @@ private:
 
 	UPROPERTY()
 	ABWCharacter* CurrentHoveredEnemy;
+
+	// 코드 HUD
+	void BuildCodeLayout(UCanvasPanel* RootCanvas);
+	void UpdateCodeLayout();
+	void StyleButton(UButton* Button, const FLinearColor& Accent, int32 FontSize, const FVector2D& Size, const FVector2D& Position);
+	UWidget* MakePile(const FString& Label, bool bRight, UTextBlock*& OutCount);
+	UTextBlock* MakeHUDText(int32 Size, const FLinearColor& Color, bool bBold = false);
+	FString DescribeBattlefield() const; // 이번 전투 차원의 기믹 한 줄 (차원 없으면 빈 글)
+	UPROPERTY() TObjectPtr<UBorder> ClassChip;
+	UPROPERTY() TObjectPtr<UTextBlock> TXT_ClassChip;
+	UPROPERTY() TObjectPtr<UTextBlock> TXT_ClassName;
+	UPROPERTY() TObjectPtr<UTextBlock> TXT_RunInfo;
+	UPROPERTY() TObjectPtr<UTextBlock> TXT_LifeLine;
+	// [추가] 삶의 방식 전용 '고유 자원' 판: 줄마다 [이름표] 값 + 한 줄 설명 (광기·상처 / 장전·마탄·들림 / 명상·영창 / 어둠·테네브리스 / 방어도·질풍노도)
+	UPROPERTY() TObjectPtr<class UVerticalBox> ResourceBox;
+	// [추가] 모은 세트: 이름과 눈금만 작게, 마우스를 올리면 단계별 효과
+	UPROPERTY() TObjectPtr<class UVerticalBox> SetBox;
+	struct FSetRow { TWeakObjectPtr<class UWidget> Widget; FString Title; FString Desc; };
+	TArray<FSetRow> SetRows;
+	FString ShownSetKey;
+	void UpdateSetPanel();
+	// [추가] 마우스를 올린 적의 양 옆 카드: 왼쪽 = 내 턴 반격, 오른쪽 = 적 턴 행동
+	UPROPERTY() TObjectPtr<class UBorder> EnemyCard[2];
+	UPROPERTY() TObjectPtr<class UTextBlock> TXT_EnemyCardKind[2];
+	UPROPERTY() TObjectPtr<class UTextBlock> TXT_EnemyCardName[2];
+	UPROPERTY() TObjectPtr<class UTextBlock> TXT_EnemyCardValue[2];
+	UPROPERTY() TObjectPtr<class UTextBlock> TXT_EnemyCardDesc[2];
+	UPROPERTY(EditAnywhere, Category = "BW HUD") float EnemyCardWidth = 220.0f;
+	void BuildEnemyCards(class UCanvasPanel* RootCanvas);
+	void UpdateEnemyCards();
+	FString ShownResourceKey;
+	void UpdateResourcePanel(const FLinearColor& ClassColor);
+	UPROPERTY() TObjectPtr<UTextBlock> TXT_StatLine;
+	UPROPERTY() TObjectPtr<UTextBlock> TXT_GoldValue;
+	UPROPERTY() TObjectPtr<UBorder> DimPlate;
+	UPROPERTY() TObjectPtr<UBorder> DimDot;
+	UPROPERTY() TObjectPtr<UTextBlock> TXT_DimName;
+	UPROPERTY() TObjectPtr<UTextBlock> TXT_DimDetail;
+	UPROPERTY() TObjectPtr<UTextBlock> TXT_DrawCount;
+	UPROPERTY() TObjectPtr<UTextBlock> TXT_DiscardCount;
+	UPROPERTY() TObjectPtr<UTextBlock> TXT_HandCount;
 };

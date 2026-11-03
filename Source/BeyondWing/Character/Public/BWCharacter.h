@@ -6,6 +6,7 @@
 #include "BeyondWing/Combat/Public/BWDuelRules.h"
 #include "BeyondWing/Combat/Public/BWStatusRules.h"
 #include "BeyondWing/Combat/Public/BWAugmentRules.h"
+#include "BeyondWing/Combat/Public/BWLifestyleRules.h"
 #include "BWCharacter.generated.h"
 
 class UDeckComponent;
@@ -17,6 +18,7 @@ struct FBWPlannedHit
 	int32 RawDamage = 0;
 	FBWDefenseResult Defense;   // 방어 후 피해, 회피 여부, 매직실드에 쓸 MP
 	bool bIgnoreBlock = false;
+	int32 CoverAbsorbed = 0;    // 사격 방벽 보호막이 막은 양
 	int32 BlockAbsorbed = 0;
 	int32 HPLoss = 0;
 };
@@ -94,7 +96,21 @@ public:
 	UPROPERTY(BlueprintReadOnly, Category = "BW Status") int32 TurnAttackMaxBonus = 0;
 
 	// [추가] HP 회복 (최대 HP까지, 플레이어는 GameInstance HP도 함께). 실제로 회복한 양을 돌려준다
-	UFUNCTION(BlueprintCallable, Category = "BW Status") int32 Heal(int32 Amount);
+	UFUNCTION(BlueprintCallable, Category = "BW Status") int32 Heal(int32 Amount, bool bFromCard = false);
+
+	// --- [추가] 삶의 방식 고유 자원 (삶의방식카드기획 3~7장, BWLifestyleRules) ---
+	UPROPERTY(BlueprintReadOnly, Category = "BW Status|Lifestyle") FBWLifestyleState Life;
+	// 폭발에 더 건 MP (합을 열 때 정함, 미리 보기는 -1)
+	int32 ExplosionExtraMP = -1;
+
+	// 광전사: HP 60% 이하면 광기
+	UFUNCTION(BlueprintPure, Category = "BW Status|Lifestyle") bool IsRaging() const;
+	// 머리 위에 보여 줄 고유 자원 한 줄
+	UFUNCTION(BlueprintPure, Category = "BW Status|Lifestyle") FString GetLifestyleStatusText() const;
+	// 어둠의 성자: 테네브리스에 들어가면 덱의 치유 카드가 공격카드가 되고, 나오면 돌아온다
+	void SetTenebris(bool bOn);
+	// 매직 캐스터: 명상 1번 (해방 4에서 전투 끝까지 강화)
+	void AddLiberation(int32 Amount);
 
 	// --- [추가] 증강 (전투 기획서 10장) ---
 	UPROPERTY(BlueprintReadOnly, Category = "BW Status|Augment") FBWAugmentTotals AugmentTotals;
@@ -102,6 +118,36 @@ public:
 
 	// 전투 시작 때 가진 증강을 반영한다 (속도, 시작 방어도, 손패·카드·합 한도, MP 회복량, 재굴림)
 	UFUNCTION(BlueprintCallable, Category = "BW Status|Augment") void ApplyAugments(const FBWAugmentTotals& Totals);
+
+	// [추가] 증강 조건을 따지려고 전투 중에 세는 값 (전투마다·턴마다 비운다)
+	struct FAugmentTrack
+	{
+		bool bFirstDuelDone = false;
+		bool bFirstCardDone = false;
+		bool bFirstAttackCritDone = false;
+		bool bStunGuardUsed = false;
+		bool bLastStandUsed = false;
+		bool bLast30Used = false;
+		bool bKillRefundUsed = false;
+		bool bExtraDuelUsed = false;
+		int32 FistStacks = 0;
+		bool bTurnFirstDuelDone = false;
+		bool bFirstCritDone = false;
+		bool bMoveLeftAtDuel = false; // 격돌을 걸면 이동이 0이 되므로 그 직전 값을 남긴다
+		int32 MovedTiles = 0;
+		int32 EffectsThisTurn = 0;
+	} AugTrack;
+
+	// 내 공격 숫자 범위에 증강을 더한다
+	void ApplyAugmentsToRange(FBWDiceRange& Range, const FBWCardData* BoostCard, const ABWCharacter* Target) const;
+	// 효과카드를 쓴 뒤 (실피라 세트)
+	void NoteEffectCardUsed();
+	// 내가 이긴 격돌의 뒤처리 (흡혈, 출혈·취약·둔화, 처치 보상)
+	void ApplyAugmentsAfterWin(ABWCharacter* Enemy, const FBWCardData& Card, bool bCardBoost, int32 Dealt);
+	// 턴이 끝날 때 방어도 등
+	void ApplyAugmentsEndTurn();
+	// 방어도를 얻는다 (팝업 포함)
+	void GainBlock(int32 Amount, const TCHAR* Label);
 
 	// --- [추가] 상태이상 (전투 기획서 9장) ---
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "BW Status|Effects") TArray<FBWStatusInstance> Statuses;
@@ -121,6 +167,42 @@ public:
 	// --- 적군 전용 AI 속성 ---
 	// '강화 후 공격' 행동으로 쌓이는 값. 적 스킬 숫자 범위의 최솟값·최댓값에 더해진다
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW Status") int32 CurrentAttackBuff;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW Status") int32 MaxAttackBuff = 99;
+	// [추가] 적: 행동 사거리, 내가 이 거리 안이면 물러남, 보스 페이즈, 소환
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW AI") int32 ActionRange = 1;
+	UPROPERTY(BlueprintReadOnly, Category = "BW AI") FString EnemyDescription;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW AI") int32 KeepAwayBelow = 0;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW AI") float Phase2HPFraction = 0.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW AI") TArray<FBWEnemyTurnPattern> Phase2Patterns;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW AI") int32 Phase2Block = 0;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW AI") FName SummonEnemy = NAME_None;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW AI") int32 MaxSummons = 2;
+	UPROPERTY(Transient) TObjectPtr<ABWCharacter> SummonedBy = nullptr;
+	bool bPhase2Done = false;
+	void CheckEnemyPhase();
+
+	// [추가] 3층 기믹 (FBWEnemyData 참고)
+	UPROPERTY(EditAnywhere, Category = "BW AI") float Phase3HPFraction = 0.0f;
+	UPROPERTY(EditAnywhere, Category = "BW AI") TArray<FBWEnemyTurnPattern> Phase3Patterns;
+	UPROPERTY(EditAnywhere, Category = "BW AI") int32 Phase3Block = 0;
+	bool bPhase3Done = false;
+	float ReviveFraction = 0.0f;
+	bool bRevived = false;
+	bool bRevivePending = false;
+	int32 TurnSelfDamage = 0, TurnSelfBuff = 0, GoldSteal = 0, StolenGold = 0, BreakBuff = 2;
+	int32 EnrageTurn = 0, EnrageBuff = 0, EnemyTurnsTaken = 0;
+	int32 RushSpeed = 0;   // 사거리 밖에서 맞은 적: 다음 턴 속도에 더한다
+	int32 CoverShield = 0; // 사격 방벽 보호막: 방어도와 따로, 자기 턴이 시작되면 사라진다
+	bool bBreaksObstacles = false, bMirrorCounter = false, bChanting = false;
+	float LastWishFraction = 0.0f;
+	int32 LastWishTurns = 3, LastWishLeft = 0;
+	bool bLastWish = false;
+	int32 EatenCards = 0;
+	void BreakChant();
+	void Revive(FIntPoint Coord);
+	void EndEnemyTurnRules();
+	// [추가] 이번 턴 돌진한 칸 수 (겔레온 활공)
+	int32 LastRushSteps = 0;
 
 	// [추가] 4-3: 적은 전투 시작 때 배치된 순서(0부터)대로 행동한다
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "BW AI") int32 EnemyOrder = 0;
@@ -199,6 +281,11 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "BW Combat")
 	void ReceiveDamage(int32 DamageAmount);
 
+	// [추가] 고정 피해 (출혈, 가시덤불): 방어 없이 방어도 → HP, "Label -n" 팝업. 실제로 깎인 HP
+	int32 TakeFixedDamage(int32 Amount, const FString& Label);
+	// [추가] 서 있는 칸의 지형을 합 굴림에 반영 (마력 공명석: 최댓값 +)
+	void ApplyTerrainToDuelSide(FBWDuelSide& Side) const;
+
 	// [추가] 합에서 받는 피해: 플레이어는 방어(5-3 4단계)를 거친 뒤 방어도 → HP 순으로 깎인다 (5단계)
 	UFUNCTION(BlueprintCallable, Category = "BW Combat")
 	FBWDefenseResult TakeHit(int32 Damage, bool bIgnoreBlock);
@@ -227,7 +314,7 @@ public:
 	// 공격카드가 기본 공격에 더해 주는 몫 (카드 숫자 범위 × 배율)
 	UFUNCTION(BlueprintPure, Category = "BW Combat|Duel") FBWDiceRange GetCardBoostRange(const FBWCardData& Card) const;
 	// 내가 선공으로 여는 합의 굴림 조건: BoostCard가 없으면 기본 공격, 있으면 기본 공격 + 카드 몫 (카드의 상태이상·밀기를 쓴다)
-	FBWDuelSide MakeAttackSide(const FBWCardData* BoostCard) const;
+	FBWDuelSide MakeAttackSide(const FBWCardData* BoostCard, const ABWCharacter* Target = nullptr) const;
 	// [추가] 합을 걸 수 있는 거리 (상하좌우 칸 수). 기본 공격의 Range와 강화 카드의 Range 중 큰 값, 최소 1
 	int32 GetAttackReach(const FBWCardData* BoostCard) const;
 	// [추가] 매직실드 가드에 지금 걸 수 있는 최대 MP (보유 MP와 한 번 상한 중 작은 값). 매직실드가 아니면 0
@@ -235,7 +322,8 @@ public:
 
 	// [추가] 적이 이번 턴 공개한 스킬의 굴림 조건 (현재 패턴의 첫 행동 숫자 범위)
 	UFUNCTION(BlueprintPure, Category = "BW Combat|Duel")
-	FBWDuelSide MakeEnemyDuelSide() const;
+	// bCounter: 내 턴에 공격받아 내는 반격 카드 / 아니면 적 턴의 행동 카드
+	FBWDuelSide MakeEnemyDuelSide(bool bCounter = false) const;
 
 	// 약화·취약·혼란·집중을 굴림 조건에 반영
 	void ApplyStatusesToDuelSide(FBWDuelSide& Side) const;

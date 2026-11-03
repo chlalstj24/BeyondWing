@@ -51,6 +51,14 @@ struct FBWClassData : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "2 문구", meta = (MultiLine = true))
 	FText Description;
 
+	// [추가] 펼친 카드의 '고유 기믹' 칸: 이 삶의 방식만의 규칙을 한 줄에 하나씩 ("장전 — 사격으로 합을 이기면 …")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "2 문구", meta = (MultiLine = true))
+	FText MechanicsText;
+
+	// [추가] 펼친 카드의 '시작 구성' 칸에 덧붙일 고유 시작 효과 (한 줄에 하나). HP·속도·방어·MP·방어도·기본 공격·시작 덱은 수치에서 자동으로 적는다
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "2 문구", meta = (MultiLine = true))
+	FText StartPerkText;
+
 	// 고를 수 없을 때 카드에 나오는 글 (예: 준비 중)
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "2 문구")
 	FText LockedText;
@@ -67,7 +75,7 @@ struct FBWClassData : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "3 모양")
 	TSoftObjectPtr<UTexture2D> Illustration;
 
-	// 능력 막대 (0~5칸, 화면에 보이는 느낌값일 뿐 규칙에는 영향 없음). 넷 다 0이면 막대를 숨긴다
+	// 능력 막대 (0~5칸, 화면에 보이는 느낌값일 뿐 규칙에는 영향 없음). 모두 0이면 막대를 숨긴다
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "3 모양", meta = (ClampMin = "0", ClampMax = "5"))
 	int32 RatingFirepower = 0;
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "3 모양", meta = (ClampMin = "0", ClampMax = "5"))
@@ -76,6 +84,9 @@ struct FBWClassData : public FTableRowBase
 	int32 RatingMobility = 0;
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "3 모양", meta = (ClampMin = "0", ClampMax = "5"))
 	int32 RatingGrowth = 0;
+	// 난이도 (막대 맨 아래 줄). 높을수록 다루기 어렵다
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "3 모양", meta = (ClampMin = "0", ClampMax = "5"))
+	int32 RatingDifficulty = 0;
 
 	// ── 규칙 수치 ──
 	// 새 판 시작 능력치와 최대 HP

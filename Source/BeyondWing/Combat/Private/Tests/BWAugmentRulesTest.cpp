@@ -127,7 +127,48 @@ bool FBWAugmentAggregateTest::RunTest(const FString& Parameters)
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBWAugmentDuelRerollTest, "BeyondWing.Combat.Augment.DuelReroll", BWAugmentTest::Flags)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBWAugmentPickByKindTest, "BeyondWing.Combat.Augment.PickByKind", BWAugmentTest::Flags)
+bool FBWAugmentPickByKindTest::RunTest(const FString& Parameters)
+{
+	TArray<FName> Names;
+	TArray<FBWAugmentData> Rows;
+	for (int32 i = 0; i < 30; ++i)
+	{
+		FBWAugmentData A;
+		A.Kind = (EBWAugmentKind)(i % 3);
+		A.Set = i < 6 ? EBWAugmentSet::Astrin : EBWAugmentSet::Berend;
+		A.ClassType = i % 5 == 0 ? EClassType::PHA : EClassType::Common;
+		Names.Add(*FString::Printf(TEXT("A%d"), i));
+		Rows.Add(A);
+	}
+	FRandomStream Stream(5);
+	for (int32 Trial = 0; Trial < 100; ++Trial)
+	{
+		const TArray<FName> Picks = UBWAugmentRules::PickByKind(Names, Rows, EClassType::TEC, { TEXT("A1") }, {}, Stream);
+		TestEqual(TEXT("one of each kind"), Picks.Num(), 3);
+		TSet<EBWAugmentKind> Kinds;
+		for (const FName& P : Picks)
+		{
+			const int32 Idx = Names.IndexOfByKey(P);
+			Kinds.Add(Rows[Idx].Kind);
+			TestTrue(TEXT("never other class"), Rows[Idx].ClassType == EClassType::Common);
+			TestFalse(TEXT("never owned"), P == FName(TEXT("A1")));
+		}
+		TestEqual(TEXT("three kinds"), Kinds.Num(), 3);
+	}
+
+	// 세트 2개면 켜지고, 효과는 누적된다
+	FBWAugmentData Tagged;
+	Tagged.Set = EBWAugmentSet::Patrovas;
+	const FBWAugmentTotals Two = UBWAugmentRules::Aggregate({ Tagged, Tagged });
+	TestEqual(TEXT("set 2: max +2"), Two.GetInt(EBWAugStat::AttackMax), 2);
+	const FBWAugmentTotals Four = UBWAugmentRules::Aggregate({ Tagged, Tagged, Tagged, Tagged });
+	TestEqual(TEXT("set 4: damage x3"), Four.Get(EBWAugStat::DamageMult), 3.0f);
+	TestEqual(TEXT("set 3 stays on"), Four.Get(EBWAugStat::DamagePct), 0.25f);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBWAugmentDuelRerollTest,"BeyondWing.Combat.Augment.DuelReroll", BWAugmentTest::Flags)
 bool FBWAugmentDuelRerollTest::RunTest(const FString& Parameters)
 {
 	// 1~10 vs 6 고정: 재굴림 없이 이길 확률 40%(7~10), 지면 한 번 더 → 1 - 0.5×(5/10 패배 중 다시 패) ≈ 0.4 + 0.5×0.4 + 동점 처리

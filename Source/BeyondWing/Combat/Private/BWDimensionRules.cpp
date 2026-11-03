@@ -7,26 +7,28 @@ FBWBattlefieldState UBWDimensionRules::MakeBattlefield(EDimensionType Dimension,
 	State.bOverloaded = bOverloaded && Dimension != EDimensionType::None;
 	if (Dimension == EDimensionType::Taiga)
 	{
-		State.TaigaChargesLeft = TaigaFreeHits;
+		// 은신은 맞닿은 적 없이 턴을 끝내야 생긴다 (컨트롤러 RequestEndTurn)
 		State.TaigaEnemyChargesLeft = State.bOverloaded ? TaigaOverloadEnemyHits : 0;
 	}
 	return State;
 }
 
-float UBWDimensionRules::RollPatrovasMultiplier(FBWBattlefieldState& State, FRandomStream& Stream)
+void UBWDimensionRules::RollManaRows(FBWBattlefieldState& State, int32 RowCount, FRandomStream& Stream)
 {
-	if (State.Dimension != EDimensionType::Patrovas)
-	{
-		State.PatrovasMaxMultiplier = 1.0f;
-		return State.PatrovasMaxMultiplier;
-	}
+	State.ManaRows.Reset();
+	if (State.Dimension != EDimensionType::Patrovas || RowCount <= 0) return;
+	while (State.ManaRows.Num() < FMath::Min(ManaLineCount, RowCount)) State.ManaRows.AddUnique(Stream.RandRange(0, RowCount - 1));
+}
 
-	const float GrowChance = State.bOverloaded ? PatrovasGrowChanceOverloaded : PatrovasGrowChance;
-	const bool bGrow = Stream.GetFraction() < GrowChance;
-	State.PatrovasMaxMultiplier = bGrow
-		? Stream.FRandRange(1.0f, PatrovasMaxMultiplier)
-		: Stream.FRandRange(PatrovasMinMultiplier, 1.0f);
-	return State.PatrovasMaxMultiplier;
+bool UBWDimensionRules::IsOnManaLine(const FBWBattlefieldState& State, FIntPoint Coord)
+{
+	return State.Dimension == EDimensionType::Patrovas && State.ManaRows.Contains(Coord.X);
+}
+
+float UBWDimensionRules::GetGeleonAdvanceMultiplier(const FBWBattlefieldState& State, int32 Advance)
+{
+	if (State.Dimension != EDimensionType::Geleon) return 1.0f;
+	return 1.0f + FMath::Min(GeleonMaxAdvanceBonus, GeleonPerAdvance * FMath::Max(0, Advance));
 }
 
 FBWDiceRange UBWDimensionRules::ScaleSkillMax(const FBWDiceRange& Range, float Multiplier)
@@ -34,23 +36,28 @@ FBWDiceRange UBWDimensionRules::ScaleSkillMax(const FBWDiceRange& Range, float M
 	return UBWDuelRules::ScaleRangeMax(Range, Multiplier);
 }
 
-FBWDuelSide UBWDimensionRules::ApplyToPlayerSide(const FBWBattlefieldState& State, const FBWDuelSide& Side)
+FBWDuelSide UBWDimensionRules::ApplyToPlayerSide(const FBWBattlefieldState& State, const FBWDuelSide& Side, int32 Advance, bool bOnManaLine)
 {
 	FBWDuelSide Result = Side;
-	// 방치 보너스 피해량은 겔레온 기믹과 더한다 (겔레온 +50% + 보너스 +50% = ×2.0)
-	if (State.Dimension != EDimensionType::Geleon && State.BonusDamage > 0.0f) Result.DamageMultiplier *= 1.0f + State.BonusDamage;
+	if (State.BonusDamage > 0.0f) Result.DamageMultiplier *= 1.0f + State.BonusDamage;
 	switch (State.Dimension)
 	{
 	case EDimensionType::Patrovas:
-		// 내 스킬만 흔들린다 (속도와 적 스킬은 그대로)
-		Result.SkillRange = ScaleSkillMax(Result.SkillRange, State.PatrovasMaxMultiplier);
+		if (bOnManaLine) Result.SkillRange = ScaleSkillMax(Result.SkillRange, ManaLineMaxMultiplier);
+		break;
+	case EDimensionType::Berend:
+		Result.bPushesTarget = true;
 		break;
 	case EDimensionType::Geleon:
-		Result.DamageMultiplier *= GeleonDamageMultiplier + State.BonusDamage;
+		Result.DamageMultiplier *= GetGeleonAdvanceMultiplier(State, Advance);
 		if (State.bOverloaded) Result.IncomingDamageMultiplier *= GeleonOverloadIncomingMultiplier;
 		break;
 	case EDimensionType::Taiga:
-		if (State.TaigaChargesLeft > 0) Result.CritChance = 1.0f; // 최초 3회 공격은 치명타
+		if (State.TaigaChargesLeft > 0)
+		{
+			Result.CritChance = 1.0f; // 은신: 다음 공격은 치명타, 방어 카드로 깎이지 않는다
+			Result.bIgnoreGuard = true;
+		}
 		break;
 	default:
 		break;
@@ -58,19 +65,13 @@ FBWDuelSide UBWDimensionRules::ApplyToPlayerSide(const FBWBattlefieldState& Stat
 	return Result;
 }
 
-bool UBWDimensionRules::CanUseCard(const FBWBattlefieldState& State, const FBWCardData& Card)
+FBWDuelSide UBWDimensionRules::ApplyToEnemySide(const FBWBattlefieldState& State, const FBWDuelSide& Side, int32 Advance, bool bOnManaLine)
 {
-	if (State.Dimension != EDimensionType::Geleon) return true;
-	if (Card.CardKind == ECardKind::Effect) return State.bGeleonUseEffects;
-	return !State.bGeleonUseEffects || State.GeleonAttackCardName.IsEmpty() || State.GeleonAttackCardName == Card.CardName;
-}
-
-void UBWDimensionRules::NoteAttackCardUsed(FBWBattlefieldState& State, const FBWCardData& Card)
-{
-	if (State.Dimension == EDimensionType::Geleon && State.bGeleonUseEffects && State.GeleonAttackCardName.IsEmpty() && Card.CardKind == ECardKind::Attack)
-	{
-		State.GeleonAttackCardName = Card.CardName;
-	}
+	FBWDuelSide Result = Side;
+	if (bOnManaLine) Result.SkillRange = ScaleSkillMax(Result.SkillRange, ManaLineMaxMultiplier);
+	if (State.Dimension == EDimensionType::Berend && !Result.bGuard) Result.bPushesTarget = true;
+	Result.DamageMultiplier *= GetGeleonAdvanceMultiplier(State, Advance);
+	return Result;
 }
 
 bool UBWDimensionRules::ConsumeTaigaCharge(FBWBattlefieldState& State)
@@ -90,6 +91,6 @@ bool UBWDimensionRules::ConsumeTaigaEnemyCharge(FBWBattlefieldState& State)
 void UBWDimensionRules::GetWallSlamRule(const FBWBattlefieldState& State, bool bPusherIsPlayer, bool& bOutExtraDamage, bool& bOutStun)
 {
 	const bool bBerend = State.Dimension == EDimensionType::Berend;
-	bOutExtraDamage = bBerend && (bPusherIsPlayer || State.bOverloaded);
+	bOutExtraDamage = bBerend;
 	bOutStun = bBerend && bPusherIsPlayer;
 }

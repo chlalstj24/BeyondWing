@@ -38,10 +38,11 @@ public:
 	static constexpr int32 FirstBattleStep = 0;        // 1칸: 전 줄 일반 전투
 	static constexpr int32 TreasureStep = 7;           // 8칸: 전 줄 보물
 	static constexpr int32 RestStep = 14;              // 15칸: 전 줄 휴식
-	static constexpr float GateOpenChance = 0.7f;      // 차원문 70% 열림
-	static constexpr int32 MaxClosedInARow = 2;        // 같은 경계에서 3칸 연속 닫힘 금지
+	static constexpr float GateOpenChance = 0.55f;     // 차원문 55% 열림
+	static constexpr int32 MaxClosedInARow = 3;        // 같은 경계에서 4칸 연속 닫힘 금지
 	static constexpr int32 MinRiftsPerAct = 1;
 	static constexpr int32 MaxRiftsPerAct = 2;
+	static constexpr int32 MaxRandomRestsPerRow = 2;   // 한 줄에서 무작위 휴식 최대 2개 (15칸 고정 휴식 제외 → 줄당 최대 3개)
 	static constexpr int32 DeepNeglectGold = 50;
 	static constexpr int32 OverloadIStart = 4;         // 연속 체류 4~5턴
 	static constexpr int32 OverloadIIStart = 6;        // 6턴 이상 (상한)
@@ -56,7 +57,7 @@ public:
 	static bool GetFixedNodeType(int32 Step, EMapNodeType& OutType);
 
 	// 고정 칸이 아닌 칸의 노드 종류를 비중(4장) + 차원 성향(5장)으로 뽑는다
-	static EMapNodeType PickNodeType(EDimensionType Dimension, FRandomStream& Stream);
+	static EMapNodeType PickNodeType(EDimensionType Dimension, FRandomStream& Stream, bool bAllowRest = true);
 
 	// 노드 비중 (합 100). 차원 성향이 반영된다
 	static void GetNodeWeights(EDimensionType Dimension, TArray<TPair<EMapNodeType, int32>>& OutWeights);
@@ -86,7 +87,8 @@ public:
 	// 한 칸 전진할 때 카운터 갱신 (6장 1·4번): 도착한 줄은 0, 나머지는 +1(상한). 도착 전 값으로 보너스를 판정한 다음 부른다
 	static void AdvanceNeglect(TMap<EDimensionType, int32>& Neglected, EDimensionType Arrived);
 
-	// 강화 카드: 공격카드는 숫자 범위 최소 +1·최대 +2, 효과카드는 수치 +1(회복·방어도 +3), 이름 뒤에 +
+	// 강화 카드: 공격카드는 숫자 범위 최소 +1·최대 +2, 효과카드는 모든 수치가 오르고(회복·방어도 +3, 회피 +10%p 등) 설명의 숫자도 바뀐다.
+	// 오를 수치가 없는 효과카드는 MP 비용 -1, MP가 안 들면 카드 1장 뽑기가 붙는다. 이름 뒤에 +
 	UFUNCTION(BlueprintPure, Category = "BW Map")
 	static FBWCardData MakeUpgradedCard(const FBWCardData& Card);
 

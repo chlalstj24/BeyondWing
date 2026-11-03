@@ -89,6 +89,8 @@ protected:
 
 	// [추가] 카드를 이만큼(화면 좌표) 위로 끌었다 놓으면 사용한다
 	UPROPERTY(EditAnywhere, Category = "Hand|Drag") float DragUseDistance = 140.0f;
+	// [추가] 사거리 칸 그림을 메모리에 붙들어 둔다 (안 불러오면 흰색으로 나온다)
+	UPROPERTY(Transient) TArray<TObjectPtr<class UTexture2D>> RangeArtKeep;
 
 private:
 	// [추가] 끌기 상태: 누른 카드 번호(-1이면 없음)와 시작 위치(로컬)

@@ -40,5 +40,7 @@ public:
 
 	// HUD용 짧은 이름: "기절 1, 출혈(3) 2"
 	UFUNCTION(BlueprintPure, Category = "BW Status")
+	// 상태마다 한 줄: "출혈 2턴: 턴이 끝날 때 피해 3"
+	static FString DescribeStatusDetails(const TArray<FBWStatusInstance>& Statuses);
 	static FString DescribeStatuses(const TArray<FBWStatusInstance>& Statuses);
 };

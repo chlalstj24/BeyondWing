@@ -30,6 +30,7 @@ struct FBWDuelPresentation
 	UPROPERTY(BlueprintReadOnly, Category = "Duel") int32 Damage = 0;
 	UPROPERTY(BlueprintReadOnly, Category = "Duel") bool bCritical = false;
 	UPROPERTY(BlueprintReadOnly, Category = "Duel") int32 TieRerolls = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "Duel") bool bGuardHeld = false; // 적의 방어 카드에 막힘
 	UPROPERTY(BlueprintReadOnly, Category = "Duel") bool bRerolled = false;
 	UPROPERTY(BlueprintReadOnly, Category = "Duel") FString Extra; // 방어도 무시, 기믹 등 덧붙일 말
 
@@ -78,6 +79,9 @@ public:
 
 	// 화면에 띄우고 연출을 시작한다. 끝나면 화면에서 내려가고 OnFinished를 부른다
 	void PlayDuel(const FBWDuelPresentation& Data, TFunction<void()> OnFinished);
+
+	// 좌클릭·스페이스: 굴리는 중이면 결과로 건너뛰고, 결과가 나온 뒤 0.5초가 지났으면 다음으로. 연출 중이면 true (입력을 먹는다)
+	bool HandleAdvanceInput();
 
 	// 0 = 소개, 1 = 굴리는 중, 2 = 양쪽 수치 공개, 3 = 최종 피해. 블루프린트에서 연출을 덧붙이는 자리
 	UFUNCTION(BlueprintImplementableEvent, Category = "Duel")

@@ -31,6 +31,7 @@ int32 UBWDuelRules::RollRange(const FBWDiceRange& Range, FRandomStream& Stream)
 
 int32 UBWDuelRules::RollSide(const FBWDuelSide& Side, FRandomStream& Stream)
 {
+	if (Side.bMaxRoll) return Side.SkillRange.Max; // 세트 아스트린 4개
 	const int32 First = RollRange(Side.SkillRange, Stream);
 	if (Side.bConfused == Side.bFocused) return First; // 없음, 또는 혼란·집중 상쇄
 
@@ -63,6 +64,12 @@ FBWDuelResult UBWDuelRules::ResolveDuel(const FBWDuelSide& Attacker, const FBWDu
 
 	while (true)
 	{
+		// [추가] 세트 겔레온 4개: 지지 않는다
+		if (Attacker.bNeverLose && Result.AttackerRoll <= Result.DefenderRoll) Result.AttackerRoll = Result.DefenderRoll + 1;
+
+		// [추가] 세트 아스트린: 동점이면 선공이 이긴다
+		if (Result.AttackerRoll == Result.DefenderRoll && Attacker.bWinsTies) break;
+
 		// 동점이면 둘 다 다시 굴린다. 3번 연속 동점이면 피해 없이 끝
 		if (Result.AttackerRoll == Result.DefenderRoll)
 		{
@@ -86,12 +93,130 @@ FBWDuelResult UBWDuelRules::ResolveDuel(const FBWDuelSide& Attacker, const FBWDu
 		break;
 	}
 
-	Result.bAttackerWon = Result.AttackerRoll > Result.DefenderRoll;
+	Result.bAttackerWon = Result.AttackerRoll > Result.DefenderRoll || (Attacker.bWinsTies && Result.AttackerRoll == Result.DefenderRoll);
+
+	// [추가] 방어 카드: 막아 내면 아무 일도 없다
+	if (Defender.bGuard && !Result.bAttackerWon)
+	{
+		Result.bDraw = true;
+		Result.bGuardHeld = true;
+		return Result;
+	}
 	const FBWDuelSide& Winner = Result.bAttackerWon ? Attacker : Defender;
 	const FBWDuelSide& Loser = Result.bAttackerWon ? Defender : Attacker;
 	const int32 WinningRoll = Result.bAttackerWon ? Result.AttackerRoll : Result.DefenderRoll;
 	Result.FinalDamage = ApplyDamageModifiers(WinningRoll, Winner, Stream, Result.bCritical, Loser.IncomingDamageMultiplier);
+	// [추가] 방어 카드: 뚫려도 굴린 수만큼 피해가 깎인다
+	if (Defender.bGuard && !Attacker.bIgnoreGuard)
+	{
+		Result.GuardReduced = FMath::Min(Result.FinalDamage, Result.DefenderRoll);
+		Result.FinalDamage -= Result.GuardReduced;
+	}
 	return Result;
+}
+
+namespace BWForecast
+{
+	// 한쪽 굴림의 분포 (혼란 = 두 번 중 낮은 값, 집중 = 높은 값)
+	static TArray<double> RollDistribution(const FBWDuelSide& Side, int32& OutMin)
+	{
+		OutMin = Side.SkillRange.Min;
+		const int32 N = FMath::Max(Side.SkillRange.Min, Side.SkillRange.Max) - Side.SkillRange.Min + 1;
+		TArray<double> P;
+		P.SetNumZeroed(N);
+		const bool bTwice = Side.bConfused != Side.bFocused;
+		const double N2 = (double)N * N;
+		for (int32 K = 0; K < N; ++K)
+		{
+			if (!bTwice) P[K] = 1.0 / N;
+			else if (Side.bFocused) P[K] = ((K + 1.0) * (K + 1.0) - (double)K * K) / N2;
+			else P[K] = (((double)N - K) * (N - K) - (N - K - 1.0) * (N - K - 1.0)) / N2;
+		}
+		return P;
+	}
+
+	static double At(const TArray<double>& P, int32 Min, int32 Value)
+	{
+		const int32 K = Value - Min;
+		return P.IsValidIndex(K) ? P[K] : 0.0;
+	}
+
+	static FBWDiceRange DamageRange(int32 LowRoll, int32 HighRoll, float Multiplier)
+	{
+		if (HighRoll < LowRoll || HighRoll <= 0) return FBWDiceRange(0, 0);
+		return FBWDiceRange(FMath::Max(0, FMath::FloorToInt(LowRoll * Multiplier)), FMath::Max(0, FMath::FloorToInt(HighRoll * Multiplier)));
+	}
+}
+
+FBWDuelForecast UBWDuelRules::ForecastDuel(const FBWDuelSide& Attacker, const FBWDuelSide& Defender)
+{
+	using namespace BWForecast;
+	int32 AMin = 0, DMin = 0;
+	const TArray<double> PA = RollDistribution(Attacker, AMin);
+	const TArray<double> PD = RollDistribution(Defender, DMin);
+	const int32 AMax = AMin + PA.Num() - 1;
+	const int32 DMax = DMin + PD.Num() - 1;
+
+	// 한 번 굴렸을 때 승·무·패, 그리고 '지면 내 굴림만 다시' (재굴림 증강)의 결과
+	double W0 = 0, T0 = 0, L0 = 0, RW = 0, RT = 0, RL = 0;
+	for (int32 D = DMin; D <= DMax; ++D)
+	{
+		const double Pd = At(PD, DMin, D);
+		double Below = 0, Equal = At(PA, AMin, D), Above = 0;
+		for (int32 A = AMin; A <= AMax; ++A)
+		{
+			if (A < D) Below += At(PA, AMin, A);
+			else if (A > D) Above += At(PA, AMin, A);
+		}
+		W0 += Pd * Above;
+		T0 += Pd * Equal;
+		L0 += Pd * Below;
+		RW += Pd * Below * Above;
+		RT += Pd * Below * Equal;
+		RL += Pd * Below * Below;
+	}
+
+	// 동점은 MaxConsecutiveTies번째에 무승부. 재굴림은 한 번만 (뒤에서부터 계산)
+	struct FOutcome { double W = 0, L = 0, D = 0; };
+	FOutcome Next[2]; // Next[u] = 동점 다음 상태 (u = 재굴림을 이미 씀)
+	for (int32 U = 0; U < 2; ++U) Next[U].D = 1.0; // 마지막 동점 = 무승부
+	for (int32 Tie = MaxConsecutiveTies - 1; Tie >= 0; --Tie)
+	{
+		FOutcome Cur[2];
+		for (int32 U = 0; U < 2; ++U)
+		{
+			const bool bCanReroll = Attacker.LosingRerolls > 0 && U == 0;
+			FOutcome& O = Cur[U];
+			O.W = W0 + T0 * Next[U].W;
+			O.L = T0 * Next[U].L;
+			O.D = T0 * Next[U].D;
+			if (bCanReroll)
+			{
+				O.W += RW + RT * Next[1].W;
+				O.L += RL + RT * Next[1].L;
+				O.D += RT * Next[1].D;
+			}
+			else O.L += L0;
+		}
+		Next[0] = Cur[0];
+		Next[1] = Cur[1];
+	}
+
+	FBWDuelForecast Out;
+	Out.WinChance = (float)Next[0].W;
+	Out.LoseChance = (float)Next[0].L;
+	Out.DrawChance = (float)Next[0].D;
+	if (Out.WinChance > 0.0f) Out.WinDamage = DamageRange(FMath::Max(AMin, DMin + 1), AMax, Attacker.DamageMultiplier * Defender.IncomingDamageMultiplier);
+	if (Out.LoseChance > 0.0f) Out.LoseDamage = DamageRange(FMath::Max(DMin, AMin + 1), DMax, Defender.DamageMultiplier * Attacker.IncomingDamageMultiplier);
+	if (Defender.bGuard)
+	{
+		Out.bGuarded = true;
+		Out.LoseDamage = FBWDiceRange(0, 0);
+		if (!Attacker.bIgnoreGuard) Out.WinDamage = FBWDiceRange(FMath::Max(0, Out.WinDamage.Min - DMax), FMath::Max(0, Out.WinDamage.Max - DMin));
+	}
+	Out.CritChance = Attacker.CritChance;
+	Out.CritMultiplier = Attacker.CritMultiplier;
+	return Out;
 }
 
 FBWDuelResult UBWDuelRules::ResolveEnemyStrike(const FBWDuelSide& Enemy, const FBWDuelSide& Target, FRandomStream& Stream)
@@ -113,12 +238,12 @@ FBWCardData UBWDuelRules::MakeBasicStrike(EClassType ClassType)
 	Strike.SkillMin = 1;
 	Strike.SkillMax = 3;
 
-	// 임시 수치 (밸런스 단계에서 조정): PHA·TEC·HP는 주 스탯 비례 추가 피해, INT·FTH는 스탯 비례 없이 약하다
+	// 밸런스기획 3장: PHA·TEC·HP는 주 스탯 비례 추가 피해, INT·FTH는 스탯 비례 없이 약하다
 	switch (ClassType)
 	{
 	case EClassType::PHA: Strike.PHAScale = 0.5f; break;
-	case EClassType::TEC: Strike.TECScale = 0.5f; break;
-	case EClassType::HP:  Strike.HPScale = 0.03f; break;
+	case EClassType::TEC: Strike.TECScale = 0.75f; break;
+	case EClassType::HP:  Strike.HPScale = 0.04f; break;
 	default: break;
 	}
 	return Strike;
@@ -129,9 +254,9 @@ float UBWDuelRules::MakeClassCardPower(EClassType ClassType)
 	switch (ClassType)
 	{
 	case EClassType::PHA:
-	case EClassType::TEC: return 0.5f;
+	case EClassType::TEC: return 0.6f;
 	case EClassType::HP:  return 0.8f;
-	case EClassType::INT:
+	case EClassType::INT: return 1.1f;
 	case EClassType::FTH: return 1.3f;
 	default:              return 1.0f;
 	}
@@ -159,15 +284,18 @@ FBWClassCombatProfile UBWDuelRules::MakeClassProfile(EClassType ClassType)
 	switch (ClassType)
 	{
 	case EClassType::INT:
-	case EClassType::FTH: // FTH는 보류 중이라 INT와 같은 MP 체계로 시작
+	case EClassType::FTH:
 		Profile.bUsesMP = true;
-		Profile.StartMP = 6;
+		Profile.StartMP = ClassType == EClassType::INT ? 5 : 6;
 		Profile.MPPerTurn = 3;
 		Profile.MaxMP = 20;
 		break;
 	case EClassType::HP:
-		Profile.StartBlock = 3; // 기획서에 수치가 없어 턴 종료 방어도와 같게 시작 (밸런스 단계에서 조정)
-		Profile.BlockPerTurnEnd = 3;
+		Profile.StartBlock = 0;
+		Profile.BlockPerTurnEnd = 1; // 철혈: 합에서 이길 때도 방어도 +1 (BWLifestyleRules)
+		break;
+	case EClassType::TEC:
+		Profile.CritChanceBonus = 0.1f; // 사수의 눈
 		break;
 	default:
 		break;
@@ -208,7 +336,7 @@ FBWDefenseStats UBWDuelRules::MakeClassDefense(EClassType ClassType)
 	switch (ClassType)
 	{
 	case EClassType::PHA: Defense.Type = EDefenseType::Flat; Defense.FlatReduction = 2; break;
-	case EClassType::HP:  Defense.Type = EDefenseType::Flat; Defense.FlatReduction = 3; break;
+	case EClassType::HP:  Defense.Type = EDefenseType::Flat; Defense.FlatReduction = 1; break;
 	case EClassType::TEC: Defense.Type = EDefenseType::Evade; Defense.EvadeChance = 0.25f; break;
 	case EClassType::INT:
 	case EClassType::FTH: Defense.Type = EDefenseType::MagicShield; break;
@@ -244,6 +372,8 @@ FBWDefenseResult UBWDuelRules::ApplyDefense(int32 Damage, const FBWDefenseStats&
 
 	case EDefenseType::MagicShield:
 		// [수정] 가드에 걸기로 고른 MP만 쓴다. 걸어 둔 MP는 피해보다 많아도 모두 사라진다 (얼마나 걸지가 선택)
+		// [추가] 마나를 안 걸어도 기본 방어는 든다 (FlatReduction, 전사보다 낮은 값)
+		Result.DamageAfterDefense = FMath::Max(0, Result.DamageAfterDefense - Defense.FlatReduction);
 		Result.MPSpent = FMath::Min3(FMath::Max(0, ShieldMP), FMath::Max(0, InOutMP), FMath::Max(0, Defense.MagicShieldMaxMP));
 		InOutMP -= Result.MPSpent;
 		Result.ShieldBlocked = FMath::Min(Result.DamageAfterDefense, GetShieldBlock(Defense, Result.MPSpent));

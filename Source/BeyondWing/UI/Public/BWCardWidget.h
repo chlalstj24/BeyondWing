@@ -42,6 +42,10 @@ public:
 	UFUNCTION(BlueprintImplementableEvent, Category = "Card")
 	void K2_InitCardUI();
 
+	// [추가] K2_InitCardUI(블루프린트 UpdateUI) 뒤에 코드로 칸을 정리한다: '기타' 줄 = "공격 +2~5" (효과카드는 비움)
+	UFUNCTION(BlueprintCallable, Category = "Card")
+	void InitCardUI();
+
 	UFUNCTION(BlueprintCallable, Category = "Card")
 	UTexture2D* GetCardTexture(TSoftObjectPtr<UTexture2D> SoftPtr);
 
@@ -51,7 +55,7 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Card")
 	FText GetCardDescriptionText() const { return FText::FromString(CardData.Description); }
 
-	// [추가] 카드 왼쪽 위 칸: 공격카드는 숫자 범위 "4~9" (손패에서는 기본 공격에 더하는 몫 "+2~5"), 효과카드는 "효과". MP가 들면 "· MP 2"를 붙인다
+	// [수정] 카드 왼쪽 위 동그라미 = MP 비용만 ("2", MP가 안 들면 "-"). 공격 범위는 InitCardUI가 아래 '기타' 줄에 따로 쓴다
 	UFUNCTION(BlueprintPure, Category = "Card")
 	FText GetCostText() const;
 

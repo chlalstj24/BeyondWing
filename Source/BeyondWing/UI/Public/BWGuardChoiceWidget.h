@@ -19,6 +19,8 @@ class BEYONDWING_API UBWGuardChoiceWidget : public UUserWidget
 {
 	GENERATED_BODY()
 
+	friend class UBWAutoPlayer;
+
 public:
 	// 화면 내용을 채운다. OnChosen은 고른 MP로 한 번만 불린다
 	void Setup(ABWCharacter* InPlayer, const FString& EnemyName, const FString& ActionName, const FBWDiceRange& IncomingRange, TFunction<void(int32)> InOnChosen);

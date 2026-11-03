@@ -25,6 +25,20 @@ public:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) UButton* BTN_Reroll;
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) UTextBlock* TXT_Reroll;
 
+	// [추가] 후보 카드 크기
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW Augment") float CardWidth = 430.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW Augment") float CardHeight = 660.0f;
+
+	// [추가] 카드 안 칸들: 종류 배지 / 아이콘 / 이름 / (효과는 TXT_Choice) / 세트
+	UPROPERTY() TArray<class UBorder*> KindBadges;
+	UPROPERTY() TArray<UTextBlock*> KindTexts;
+	UPROPERTY() TArray<class UBorder*> IconFrames;
+	UPROPERTY() TArray<class UImage*> IconImages;
+	UPROPERTY() TArray<UTextBlock*> IconGlyphs;
+	UPROPERTY() TArray<UTextBlock*> NameTexts;
+	UPROPERTY() TArray<class UBorder*> SetBoxes;
+	UPROPERTY() TArray<UTextBlock*> SetTexts;
+
 	// GameInstance의 현재 후보와 리롤 횟수로 글자를 갱신한다
 	UFUNCTION(BlueprintCallable, Category = "BW Augment")
 	void RefreshChoices();

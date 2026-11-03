@@ -1,4 +1,5 @@
 #include "DeckComponent.h"
+#include "BeyondWing/Core/Public/BWAutoPlayer.h"
 #include "BWCharacter.h"
 #include "BeyondWing/Core/Public/BWGameInstance.h"
 #include "BeyondWing/Core/Public/BWMapRules.h"
@@ -180,6 +181,14 @@ void UDeckComponent::ShuffleDiscardIntoDeck()
 	UE_LOG(LogTemp, Log, TEXT("[덱 고갈] 무덤 카드를 수거하여 복구 셔플했습니다."));
 }
 
+int32 UDeckComponent::GetMPCost(const FBWCardData& Card) const
+{
+	// 세트 실피라 4개: 효과카드에 MP가 들지 않는다
+	const ABWCharacter* OwnerChar = Cast<ABWCharacter>(GetOwner());
+	if (Card.CardKind == ECardKind::Effect && OwnerChar && OwnerChar->AugmentTotals.Has(EBWAugStat::EffectNoMP)) return 0;
+	return Card.MPCost;
+}
+
 EBWCardUseResult UDeckComponent::CanUseCard(int32 HandIndex, int32 AvailableMP) const
 {
 	if (!Hand.IsValidIndex(HandIndex)) return EBWCardUseResult::InvalidIndex;
@@ -187,13 +196,25 @@ EBWCardUseResult UDeckComponent::CanUseCard(int32 HandIndex, int32 AvailableMP) 
 	const FBWCardData& Card = Hand[HandIndex];
 	if (Card.CardKind == ECardKind::Attack && AttackCardsUsedThisTurn >= MaxAttackCardsPerTurn) return EBWCardUseResult::AttackLimit;
 	if (Card.CardKind == ECardKind::Effect && EffectCardsUsedThisTurn >= MaxEffectCardsPerTurn) return EBWCardUseResult::EffectLimit;
-	if (Card.MPCost > AvailableMP) return EBWCardUseResult::NotEnoughMP;
+	if (GetMPCost(Card) > AvailableMP) return EBWCardUseResult::NotEnoughMP;
 	return EBWCardUseResult::Ok;
 }
 
 bool UDeckComponent::HasAttackCardInHand() const
 {
 	return Hand.ContainsByPredicate([](const FBWCardData& Card) { return Card.CardKind == ECardKind::Attack; });
+}
+
+bool UDeckComponent::ReturnDiscardedCard(const FString& CardName)
+{
+	for (int32 i = Discard.Num() - 1; i >= 0; --i)
+	{
+		if (Discard[i].CardName != CardName) continue;
+		Hand.Add(Discard[i]);
+		Discard.RemoveAt(i);
+		return true;
+	}
+	return false;
 }
 
 bool UDeckComponent::UseCard(int32 HandIndex, FBWCardData& OutCardData)
@@ -211,10 +232,10 @@ bool UDeckComponent::UseCard(int32 HandIndex, FBWCardData& OutCardData)
 	OutCardData = Hand[HandIndex];
 	if (OutCardData.CardKind == ECardKind::Attack) ++AttackCardsUsedThisTurn;
 	else ++EffectCardsUsedThisTurn;
-	if (OwnerChar) OwnerChar->CurrentMP -= OutCardData.MPCost;
+	if (OwnerChar) OwnerChar->CurrentMP -= GetMPCost(OutCardData);
 
 	// 카드 사용 효과음
-	if (GetWorld() && OutCardData.CardSound.LoadSynchronous())
+	if (GetWorld() && !UBWAutoPlayer::IsActive() && OutCardData.CardSound.LoadSynchronous())
 	{
 		UGameplayStatics::PlaySound2D(GetWorld(), OutCardData.CardSound.Get());
 	}

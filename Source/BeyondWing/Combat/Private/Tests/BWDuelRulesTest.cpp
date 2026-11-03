@@ -187,7 +187,7 @@ bool FBWDefenseClassTest::RunTest(const FString& Parameters)
 	FBWDefenseStats D = UBWDuelRules::MakeClassDefense(EClassType::PHA);
 	TestTrue(TEXT("PHA flat 2"), D.Type == EDefenseType::Flat && D.FlatReduction == 2);
 	D = UBWDuelRules::MakeClassDefense(EClassType::HP);
-	TestTrue(TEXT("HP flat 3"), D.Type == EDefenseType::Flat && D.FlatReduction == 3);
+	TestTrue(TEXT("HP flat 1"), D.Type == EDefenseType::Flat && D.FlatReduction == 1);
 	D = UBWDuelRules::MakeClassDefense(EClassType::TEC);
 	TestTrue(TEXT("TEC evade 25%"), D.Type == EDefenseType::Evade && FMath::IsNearlyEqual(D.EvadeChance, 0.25f));
 	D = UBWDuelRules::MakeClassDefense(EClassType::INT);
@@ -206,7 +206,7 @@ bool FBWDefenseFlatTest::RunTest(const FString& Parameters)
 	const FBWDefenseStats HP = UBWDuelRules::MakeClassDefense(EClassType::HP);
 	TestEqual(TEXT("PHA: 5 - 2"), UBWDuelRules::ApplyDefense(5, PHA, MP, Stream).DamageAfterDefense, 3);
 	TestEqual(TEXT("PHA: 1 - 2 floors at 0"), UBWDuelRules::ApplyDefense(1, PHA, MP, Stream).DamageAfterDefense, 0);
-	TestEqual(TEXT("HP: 5 - 3"), UBWDuelRules::ApplyDefense(5, HP, MP, Stream).DamageAfterDefense, 2);
+	TestEqual(TEXT("HP: 5 - 1"), UBWDuelRules::ApplyDefense(5, HP, MP, Stream).DamageAfterDefense, 4);
 	return true;
 }
 
@@ -285,17 +285,17 @@ bool FBWClassProfileTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("PHA: flat 2, no MP, no stacking block"), PHA.Defense.FlatReduction == 2 && !PHA.bUsesMP && PHA.BlockPerTurnEnd == 0);
 
 	const FBWClassCombatProfile TEC = UBWDuelRules::MakeClassProfile(EClassType::TEC);
-	TestTrue(TEXT("TEC: evade, no MP"), TEC.Defense.Type == EDefenseType::Evade && !TEC.bUsesMP);
+	TestTrue(TEXT("TEC: evade, no MP, +10% crit"), TEC.Defense.Type == EDefenseType::Evade && !TEC.bUsesMP && FMath::IsNearlyEqual(TEC.CritChanceBonus, 0.1f));
 
 	const FBWClassCombatProfile IntProfile = UBWDuelRules::MakeClassProfile(EClassType::INT);
-	TestTrue(TEXT("INT: magic shield + MP 6 / +3 / max 20"), IntProfile.Defense.Type == EDefenseType::MagicShield && IntProfile.bUsesMP &&
-		IntProfile.StartMP == 6 && IntProfile.MPPerTurn == 3 && IntProfile.MaxMP == 20);
+	TestTrue(TEXT("INT: magic shield + MP 5 / +3 / max 20"), IntProfile.Defense.Type == EDefenseType::MagicShield && IntProfile.bUsesMP &&
+		IntProfile.StartMP == 5 && IntProfile.MPPerTurn == 3 && IntProfile.MaxMP == 20);
 
 	const FBWClassCombatProfile FTH = UBWDuelRules::MakeClassProfile(EClassType::FTH);
-	TestTrue(TEXT("FTH starts on the INT MP system"), FTH.bUsesMP && FTH.StartMP == 6 && FTH.MPPerTurn == 3 && FTH.MaxMP == 20);
+	TestTrue(TEXT("FTH: MP 6 / +3 / max 20"), FTH.bUsesMP && FTH.StartMP == 6 && FTH.MPPerTurn == 3 && FTH.MaxMP == 20);
 
 	const FBWClassCombatProfile HP = UBWDuelRules::MakeClassProfile(EClassType::HP);
-	TestTrue(TEXT("HP: flat 3, block at start and +3 per turn end"), HP.Defense.FlatReduction == 3 && HP.StartBlock > 0 && HP.BlockPerTurnEnd == 3 && !HP.bUsesMP);
+	TestTrue(TEXT("HP: flat 1, +1 block per turn end"), HP.Defense.FlatReduction == 1 && HP.StartBlock == 0 && HP.BlockPerTurnEnd == 1 && !HP.bUsesMP);
 
 	// 시작 능력치: 주 능력치가 가장 높고, 체력 직업의 최대 HP가 가장 높다
 	TestTrue(TEXT("PHA start: PHA is the main stat"), UBWDuelRules::MakeClassStartStats(EClassType::PHA).PHA > UBWDuelRules::MakeClassStartStats(EClassType::PHA).TEC);
@@ -312,13 +312,13 @@ bool FBWClassProfileTest::RunTest(const FString& Parameters)
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBWClassResourcesTest, "BeyondWing.Combat.Class.TurnResources", BWDuelTest::Flags)
 bool FBWClassResourcesTest::RunTest(const FString& Parameters)
 {
-	// INT: 1턴 6 (전투 시작값 그대로), 2턴 9, 3턴 12 ... 최대 20에서 멈춤
+	// INT: 1턴 5 (전투 시작값 그대로), 2턴 8, 3턴 11 ... 최대 20에서 멈춤
 	const FBWClassCombatProfile IntProfile = UBWDuelRules::MakeClassProfile(EClassType::INT);
 	int32 MP = IntProfile.StartMP;
 	UBWDuelRules::ApplyTurnStartResources(IntProfile, 1, MP);
-	TestEqual(TEXT("turn 1 keeps the starting MP"), MP, 6);
+	TestEqual(TEXT("turn 1 keeps the starting MP"), MP, 5);
 	UBWDuelRules::ApplyTurnStartResources(IntProfile, 2, MP);
-	TestEqual(TEXT("turn 2 +3"), MP, 9);
+	TestEqual(TEXT("turn 2 +3"), MP, 8);
 	for (int32 Turn = 3; Turn <= 10; ++Turn) UBWDuelRules::ApplyTurnStartResources(IntProfile, Turn, MP);
 	TestEqual(TEXT("MP caps at 20"), MP, 20);
 
@@ -328,12 +328,12 @@ bool FBWClassResourcesTest::RunTest(const FString& Parameters)
 	UBWDuelRules::ApplyTurnStartResources(PHA, 2, NoMP);
 	TestEqual(TEXT("PHA gains no MP"), NoMP, 0);
 
-	// HP: 턴 종료마다 방어도 +3, 다른 직업은 그대로
+	// HP: 턴 종료마다 방어도 +1, 다른 직업은 그대로
 	const FBWClassCombatProfile HP = UBWDuelRules::MakeClassProfile(EClassType::HP);
 	int32 Block = HP.StartBlock;
 	UBWDuelRules::ApplyTurnEndResources(HP, Block);
 	UBWDuelRules::ApplyTurnEndResources(HP, Block);
-	TestEqual(TEXT("HP block stacks by 3 per turn end"), Block, HP.StartBlock + 6);
+	TestEqual(TEXT("HP block stacks by 1 per turn end"), Block, HP.StartBlock + 2);
 
 	int32 PhaBlock = 0;
 	UBWDuelRules::ApplyTurnEndResources(PHA, PhaBlock);
@@ -363,4 +363,71 @@ bool FBWDuelDeterminismTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBWDuelForecastTest, "BeyondWing.Combat.Duel.Forecast", BWDuelTest::Flags)
+bool FBWDuelForecastTest::RunTest(const FString& Parameters)
+{
+	// 확실한 경우
+	FBWDuelForecast Sure = UBWDuelRules::ForecastDuel(BWDuelTest::MakeSide(5, 5, 0.0f, 1.5f, 2.0f), BWDuelTest::MakeSide(1, 4));
+	TestEqual(TEXT("5 always beats 1~4"), Sure.WinChance, 1.0f, 0.0001f);
+	TestEqual(TEXT("win damage = roll x multiplier"), Sure.WinDamage.Max, 10);
+	TestEqual(TEXT("cannot lose"), Sure.LoseDamage.Max, 0);
+
+	// 굴려서 센 비율과 계산이 맞는지 (집중·혼란·재굴림 포함)
+	struct FCase { FBWDuelSide A, D; };
+	FBWDuelSide Focused = BWDuelTest::MakeSide(2, 7); Focused.bFocused = true;
+	FBWDuelSide Confused = BWDuelTest::MakeSide(1, 6); Confused.bConfused = true;
+	FBWDuelSide Reroll = BWDuelTest::MakeSide(1, 5); Reroll.LosingRerolls = 1;
+	const FCase Cases[] = { { BWDuelTest::MakeSide(1, 3), BWDuelTest::MakeSide(1, 3) }, { Focused, BWDuelTest::MakeSide(3, 6) }, { BWDuelTest::MakeSide(2, 8), Confused }, { Reroll, BWDuelTest::MakeSide(2, 4) } };
+	for (const FCase& C : Cases)
+	{
+		const FBWDuelForecast F = UBWDuelRules::ForecastDuel(C.A, C.D);
+		TestEqual(TEXT("chances add up to 1"), F.WinChance + F.LoseChance + F.DrawChance, 1.0f, 0.0001f);
+		FRandomStream Stream(77);
+		int32 Wins = 0, Draws = 0;
+		const int32 N = 40000;
+		for (int32 i = 0; i < N; ++i)
+		{
+			const FBWDuelResult R = UBWDuelRules::ResolveDuel(C.A, C.D, Stream);
+			if (R.bDraw) ++Draws;
+			else if (R.bAttackerWon) ++Wins;
+		}
+		TestEqual(TEXT("win chance matches rolling"), (float)Wins / N, F.WinChance, 0.015f);
+		TestEqual(TEXT("draw chance matches rolling"), (float)Draws / N, F.DrawChance, 0.01f);
+	}
+	return true;
+}
+
 #endif
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FBWDuelGuardTest, "BeyondWing.Combat.Duel.Guard", BWDuelTest::Flags)
+bool FBWDuelGuardTest::RunTest(const FString& Parameters)
+{
+	FRandomStream Stream(7);
+	FBWDuelSide Me, Guard;
+	Guard.bGuard = true;
+
+	// 이기면 적이 굴린 수만큼 깎인다
+	Me.SkillRange = FBWDiceRange(10, 10);
+	Guard.SkillRange = FBWDiceRange(3, 3);
+	FBWDuelResult R = UBWDuelRules::ResolveDuel(Me, Guard, Stream);
+	TestTrue(TEXT("attacker wins"), R.bAttackerWon);
+	TestEqual(TEXT("damage reduced by the guard roll"), R.FinalDamage, 7);
+
+	// 방어 무시면 그대로 들어간다
+	Me.bIgnoreGuard = true;
+	R = UBWDuelRules::ResolveDuel(Me, Guard, Stream);
+	TestEqual(TEXT("ignore guard"), R.FinalDamage, 10);
+
+	// 지면 아무 일도 없다
+	Me.bIgnoreGuard = false;
+	Me.SkillRange = FBWDiceRange(1, 1);
+	Guard.SkillRange = FBWDiceRange(5, 5);
+	R = UBWDuelRules::ResolveDuel(Me, Guard, Stream);
+	TestTrue(TEXT("guard held"), R.bGuardHeld && R.bDraw);
+	TestEqual(TEXT("nothing happens"), R.FinalDamage, 0);
+
+	const FBWDuelForecast F = UBWDuelRules::ForecastDuel(Me, Guard);
+	TestTrue(TEXT("forecast knows the guard"), F.bGuarded);
+	TestEqual(TEXT("no damage when losing"), F.LoseDamage.Max, 0);
+	return true;
+}

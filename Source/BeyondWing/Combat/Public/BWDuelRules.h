@@ -33,6 +33,18 @@ struct FBWDuelSide
 
 	// [추가] 증강 '재굴림': 이 쪽(선공)이 지면 자기 굴림을 한 번 다시 굴린다
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Duel") int32 LosingRerolls = 0;
+
+	// [추가] 증강: 동점이면 이 쪽(선공)이 이김, 언제나 최댓값, 지지 않음
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Duel") bool bWinsTies = false;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Duel") bool bMaxRoll = false;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Duel") bool bNeverLose = false;
+
+	// [추가] 적의 방어 카드: 상대가 이겨도 이 쪽이 굴린 수만큼 피해가 깎이고, 상대가 지면 아무 일도 없다
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Duel") bool bGuard = false;
+	// [추가] 은신·관통: 상대의 방어 카드로 깎이지 않는다
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Duel") bool bIgnoreGuard = false;
+	// [추가] 방어 카드로 막아 내면 주는 피해
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Duel") int32 GuardRiposte = 0;
 };
 
 // 스킬 숫자 범위 계산에 쓰는 스탯 (ATK는 PHA + TEC로 파생)
@@ -90,6 +102,9 @@ struct FBWClassCombatProfile
 	// HP: 전투 시작 방어도와 턴 종료마다 쌓이는 방어도
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Class") int32 StartBlock = 0;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Class") int32 BlockPerTurnEnd = 0;
+
+	// [추가] 삶의 방식 고유 치명타 확률 (마탄의 사수 +10%)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Class") float CritChanceBonus = 0.0f;
 };
 
 // 직업을 고를 때 받는 시작 능력치 (기획서에 수치가 없어 임시: 주 능력치 8, 나머지 4)
@@ -103,6 +118,25 @@ struct FBWClassStartStats
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Class") int32 INT = 4;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Class") int32 FTH = 4;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Class") int32 MaxHP = 100;
+};
+
+// [추가] 격돌을 열기 전에 보여 주는 예상 (굴림 분포를 그대로 계산, 동점 재굴림·재굴림 증강 반영)
+USTRUCT(BlueprintType)
+struct FBWDuelForecast
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Duel") float WinChance = 0.0f;
+	UPROPERTY(BlueprintReadOnly, Category = "Duel") float LoseChance = 0.0f;
+	UPROPERTY(BlueprintReadOnly, Category = "Duel") float DrawChance = 0.0f;
+	// 이기면 상대에게 주는 피해 (치명타 없이, 배율 반영·방어도 전). 이길 수 없으면 0~0
+	UPROPERTY(BlueprintReadOnly, Category = "Duel") FBWDiceRange WinDamage = FBWDiceRange(0, 0);
+	// 지면 상대가 주는 피해 (배율 반영·내 방어 전). 질 수 없으면 0~0
+	UPROPERTY(BlueprintReadOnly, Category = "Duel") FBWDiceRange LoseDamage = FBWDiceRange(0, 0);
+	UPROPERTY(BlueprintReadOnly, Category = "Duel") float CritChance = 0.0f;
+	UPROPERTY(BlueprintReadOnly, Category = "Duel") float CritMultiplier = 1.0f;
+	// [추가] 상대가 방어 카드를 냈다 (지면 피해 없음, WinDamage는 방어로 깎인 값)
+	UPROPERTY(BlueprintReadOnly, Category = "Duel") bool bGuarded = false;
 };
 
 // 합(숫자 대결) 규칙. 상태가 없고, 모든 무작위는 넘겨받은 FRandomStream에서 뽑는다 (같은 시드 = 같은 결과)
@@ -137,6 +171,10 @@ public:
 	// 5-1: 양쪽이 굴려 큰 쪽이 이기고, 이긴 쪽 숫자가 5-3의 1~3단계(치명타, 배율)를 거쳐 피해가 된다
 	UFUNCTION(BlueprintCallable, Category = "BW Duel")
 	static FBWDuelResult ResolveDuel(const FBWDuelSide& Attacker, const FBWDuelSide& Defender, UPARAM(ref) FRandomStream& Stream);
+
+	// [추가] ResolveDuel과 같은 규칙으로 승·패·무 확률과 피해 범위를 미리 계산한다 (무작위 없음)
+	UFUNCTION(BlueprintPure, Category = "BW Duel")
+	static FBWDuelForecast ForecastDuel(const FBWDuelSide& Attacker, const FBWDuelSide& Defender);
 
 	// 5-2: 적이 선공인 합. 적이 굴린 숫자가 그대로 피해가 되고 나는 카드를 내지 않는다 (Target의 받는 피해 배율은 적용)
 	UFUNCTION(BlueprintCallable, Category = "BW Duel")

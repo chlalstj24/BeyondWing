@@ -58,9 +58,12 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW Class Select|문구") FText BackButtonText;
 	// 펼친 카드의 시작 덱 줄 머리말
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW Class Select|문구") FText StartingDeckLabel;
+	// [추가] 펼친 카드의 두 칸 제목 (고유 기믹 / 시작 구성)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW Class Select|문구") FText MechanicsLabel;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW Class Select|문구") FText StartKitLabel;
 	// 일러스트가 없을 때 빈 칸 글자
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW Class Select|문구") FText IllustrationPlaceholder;
-	// 능력 막대 이름 4개 (DT_Classes의 RatingFirepower·Survival·Mobility·Growth 순서)
+	// 능력 막대 이름 5개 (DT_Classes의 RatingFirepower·Survival·Mobility·Growth·Difficulty 순서)
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW Class Select|문구") TArray<FText> RatingNames;
 
 	// 카드 크기: 아무것도 안 골랐을 때 / 고른 카드 / 밀려난 카드
@@ -69,7 +72,7 @@ public:
 	UPROPERTY(EditAnywhere, Category = "BW Class Select|Layout") float CardWidthShrunk = 200.0f;
 	UPROPERTY(EditAnywhere, Category = "BW Class Select|Layout") float CardHeight = 760.0f;
 	UPROPERTY(EditAnywhere, Category = "BW Class Select|Layout") float ArtHeightNormal = 260.0f;
-	UPROPERTY(EditAnywhere, Category = "BW Class Select|Layout") float ArtHeightExpanded = 400.0f;
+	UPROPERTY(EditAnywhere, Category = "BW Class Select|Layout") float ArtHeightExpanded = 170.0f;
 	UPROPERTY(EditAnywhere, Category = "BW Class Select|Layout") float ArtHeightShrunk = 190.0f;
 	// 펼치고 접히는 빠르기 (클수록 빠름)
 	UPROPERTY(EditAnywhere, Category = "BW Class Select|Layout") float ExpandSpeed = 12.0f;
@@ -81,7 +84,7 @@ public:
 	UPROPERTY(EditAnywhere, Category = "BW Class Select|Layout") int32 BarFontNormal = 12;
 	UPROPERTY(EditAnywhere, Category = "BW Class Select|Layout") int32 BarFontExpanded = 15;
 	// 펼친 카드 오른쪽 설명 글씨 크기
-	UPROPERTY(EditAnywhere, Category = "BW Class Select|Layout") int32 LongTextFontSize = 15;
+	UPROPERTY(EditAnywhere, Category = "BW Class Select|Layout") int32 LongTextFontSize = 14;
 
 	// 배경 빛 번짐·카드 후광·떠다니는 불티에 쓰는 부드러운 원, 화면 가장자리 어둠
 	UPROPERTY(EditAnywhere, Category = "BW Class Select|Look") TSoftObjectPtr<UTexture2D> GlowTexture;

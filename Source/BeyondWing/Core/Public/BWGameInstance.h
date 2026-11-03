@@ -5,6 +5,7 @@
 #include "BeyondWing/Core/Public/BWTypes.h"
 #include "BeyondWing/Combat/Public/BWClassData.h"
 #include "BeyondWing/Core/Public/BWMapTypes.h"
+#include "BeyondWing/Combat/Public/BWAugmentRules.h"
 #include "BWGameInstance.generated.h"
 
 // 개별 몬스터의 배치 정보 (ID + 좌표)
@@ -125,6 +126,10 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "BW Augment") bool GetAugmentData(FName RowName, FBWAugmentData& OutData) const;
 	UFUNCTION(BlueprintPure, Category = "BW Augment") TArray<FBWAugmentData> GetOwnedAugmentData() const;
+	// [추가] 가진 증강·세트를 합친 값 (지도·보상·상점에서 쓴다)
+	FBWAugmentTotals GetAugmentTotals() const;
+	// [추가] 보스 처치 증강을 받은 층 (층 시작 증강은 AugmentPickedAct)
+	UPROPERTY(BlueprintReadOnly, Category = "BW Augment") int32 AugmentBossPickedAct = 0;
 
 private:
 	EClassType AugmentPickClass = EClassType::Common;
@@ -133,6 +138,27 @@ private:
 
 public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW Player Stats") int32 PlayerDeckCount = 10;
+
+	// [추가] 마탄의 사수: 일곱 번째 마탄의 반동을 대신 받는 영혼의 탄환 (판 시작 1발, 3막에 들어서면 사라짐)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW Player Stats") int32 SoulBullets = 0;
+
+	// [추가] 막 보스를 이기면 주 능력치 +ActStatGrowth (철혈의 분쇄자는 최대 HP +ActHPGrowth) — 밸런스기획 1-2
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW Player Stats") int32 ActStatGrowth = 3;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW Player Stats") int32 ActHPGrowth = 25;
+	// [추가] 스탯 포인트: 층 보스를 잡으면 3 받아 배분창에서 나눈다
+	UPROPERTY(BlueprintReadOnly, Category = "BW Player Stats") int32 PendingStatPoints = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "BW Player Stats") int32 PlayerDefensePoints = 0;
+	static constexpr int32 StatPointsPerGrant = 3;
+	static constexpr int32 HPPerStatPoint = 8;
+	// 0 PHA, 1 TEC, 2 INT, 3 FTH, 4 체력, 5 방어
+	void SpendStatPoint(int32 Stat);
+	int32 GetMainGrowthStat() const;
+	// [추가] 철혈의 분쇄자 '털어내기': 휴식 회복 배율
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW Map") float HPClassRestMultiplier = 1.5f;
+	// [추가] 카드 보상 등급 가중치 (시작 카드는 나오지 않는다)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW Map") int32 CommonCardWeight = 60;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW Map") int32 UncommonCardWeight = 30;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW Map") int32 RareCardWeight = 10;
 
 	UFUNCTION(BlueprintCallable, Category = "BW Combat") void PrepareEncounter(EMapNodeType Type, EDimensionType Dim);
 	FName FindEnemyIDByDisplayName(FString DisplayName);
@@ -230,7 +256,12 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "BW Map") void RestHeal();
 	UFUNCTION(BlueprintCallable, Category = "BW Map") void HealPlayer(int32 Amount);
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW Map") float RestHealFraction = 0.3f;
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW Map") int32 ShopCardPrice = 50;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW Map") int32 ShopCardPrice = 50; // 일반 카드
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW Map") int32 ShopUncommonCardPrice = 75;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW Map") int32 ShopRareCardPrice = 140;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW Map") int32 ShopCardCount = 5;
+	// 상점 카드 값 (등급별). bOnSale이면 절반
+	UFUNCTION(BlueprintPure, Category = "BW Map") int32 GetShopCardPrice(const FBWCardData& Card, bool bOnSale = false) const;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BW Map") int32 ShopRemovePrice = 75;
 
 	UPROPERTY(BlueprintReadOnly, Category = "BW Stats") TMap<EDimensionType, int32> ConsecutiveCounts;
@@ -255,6 +286,21 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "BW Settings") void SetMasterVolume(float Volume, bool bSave = true);
 
 	virtual void Init() override;
+	virtual void Shutdown() override;
+
+	// [추가] 키 처리 (입력 전처리기에서 부른다). 처리했으면 true
+	bool HandleEscapeKey();
+	bool HandleConfirmKey();
+	bool HandleDuelInput();
+
+	// [추가] 전투 시작 때의 상태. 전투 중 저장은 이 값으로 해서, 이어하면 이 전투를 처음부터 다시 한다
+	void BeginBattleSnapshot();
+	UPROPERTY(BlueprintReadOnly, Category = "BW Save") bool bInBattle = false;
+	UPROPERTY(BlueprintReadOnly, Category = "BW Save") bool bResumeBattle = false;
+	int32 BattleStartHP = 0;
+	int32 BattleStartSoul = 0;
+	UPROPERTY() FBWMapBonusState BattleStartBonus;
+	TSharedPtr<class IInputProcessor> InputProcessor;
 
 private:
 	void ResetStats();

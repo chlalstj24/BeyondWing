@@ -84,6 +84,7 @@ void AGridTile::SetTileState(ETileState NewState)
 	case ETileState::Wall:        Color = FLinearColor(0.12f, 0.12f, 0.12f); break; // [추가] 장애물 벽
 	case ETileState::EnemyMovePath: Color = FLinearColor(1.0f, 0.5f, 0.05f); break;   // [추가] 적 돌진 경로 (주황)
 	case ETileState::EnemyUnit:   Color = FLinearColor(1.0f, 0.08f, 0.15f); break;    // [추가] 적 발밑 (빨강)
+	case ETileState::ManaLine:    Color = FLinearColor(0.6f, 0.15f, 1.0f); break;     // [추가] 파트로바스 마력선
 	case ETileState::PlayerUnit:  Color = FLinearColor(0.1f, 0.9f, 0.6f); break;      // [추가] 내 발밑 (청록)
 	default:                      Color = FLinearColor::Transparent; break;
 	}

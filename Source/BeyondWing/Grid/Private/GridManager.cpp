@@ -1,4 +1,8 @@
 #include "GridManager.h"
+#include "Components/StaticMeshComponent.h"
+#include "Components/WidgetComponent.h"
+#include "Engine/StaticMesh.h"
+#include "BeyondWing/Core/Public/BWAutoPlayer.h"
 #include "BeyondWing/Character/Public/BWCharacter.h"
 #include "BeyondWing/Grid/Public/GridTile.h"
 #include "Components/BoxComponent.h"
@@ -8,12 +12,16 @@
 #include "Particles/ParticleSystem.h"
 #include "Sound/SoundBase.h"
 #include "Engine/Engine.h"
+#include "BeyondWing/Grid/Public/BWBattlefieldDecor.h"
+#include "BeyondWing/Core/Public/BWMapRules.h"
+#include "BeyondWing/Core/Public/BWPlayerController.h"
 
 AGridManager::AGridManager()
 {
 	PrimaryActorTick.bCanEverTick = false;
 	Width = 8;
-	Height = 8; // [수정] 8×8 (사용자 결정). 아군 구역은 왼쪽 AllyZoneColumns(4)열
+	Height = 8; // [수정] 8×8 (사용자 결정)
+	AllyZoneColumns = 3; // [수정] 가운데 줄은 첫 배치에서 비운다 (적 바로 앞에서 시작하지 않게)
 	TileSpacing = 120.0f;
 	TotalSpawnDuration = 0.75f; 
 	TileSpawnHeightOffset = 150.0f;
@@ -155,51 +163,182 @@ void AGridManager::SpawnEnemies()
 	int32 SpawnedCount = 0;
 	for (const FEnemySpawnRequest& Request : GI->PendingEnemyRequests)
 	{
-		if (!GI->EnemyDataTable) continue;
-
-		static const FString ContextString(TEXT("Enemy Spawn Context"));
-		FBWEnemyData* Data = GI->EnemyDataTable->FindRow<FBWEnemyData>(Request.EnemyID, ContextString);
-
-		if (Data && Data->EnemyClass)
-		{
-			AGridTile* TargetTile = GetTileAtCoordinate(Request.Coordinate);
-			if (!TargetTile) continue;
-
-			FVector SpawnLoc = TargetTile->GetActorLocation() + FVector(0, 0, 20.0f);
-			FActorSpawnParameters Params;
-			ABWCharacter* NewEnemy = GetWorld()->SpawnActor<ABWCharacter>(Data->EnemyClass, SpawnLoc, GetFacingRotation(FIntPoint(-1, 0)), Params); // 적은 아군 쪽(왼쪽)을 본다
-			
-			if (NewEnemy)
-			{
-				NewEnemy->OwnGridCoordinate = Request.Coordinate;
-				NewEnemy->bIsEnemy = true; 
-				NewEnemy->EnemyDisplayName = Data->EnemyDisplayName;
-				DeployedCharacters.Add(NewEnemy);
-				
-				NewEnemy->EnemyOrder = SpawnedCount;
-				NewEnemy->MaxHP = Data->MaxHP;
-				NewEnemy->CurrentHP = Data->MaxHP;
-				NewEnemy->CombatPatterns = Data->CombatPatterns;
-				NewEnemy->CurrentPatternIndex = 0;
-				NewEnemy->SpeedDice = Data->SpeedDice;
-				NewEnemy->Block = Data->StartingBlock;
-				
-				SpawnedCount++;
-				if (CharacterPlacementSound)
-					UGameplayStatics::PlaySoundAtLocation(GetWorld(), CharacterPlacementSound, SpawnLoc);
-			}
-		}
+		if (SpawnEnemyAt(Request.EnemyID, Request.Coordinate, SpawnedCount)) SpawnedCount++;
 	}
-	
+
 	UE_LOG(LogTemp, Warning, TEXT("[BWCombat] Successfully spawned %d enemies."), SpawnedCount);
 
+	if (UBWAutoPlayer::IsActive()) { FinalizeGridColors(); return; }
 	FTimerHandle ColorTimer;
 	GetWorldTimerManager().SetTimer(ColorTimer, this, &AGridManager::FinalizeGridColors, 0.8f, false);
+}
+
+ABWCharacter* AGridManager::SpawnEnemyAt(FName EnemyID, FIntPoint Coord, int32 Order)
+{
+	UBWGameInstance* GI = Cast<UBWGameInstance>(GetGameInstance());
+	if (!GI || !GI->EnemyDataTable) return nullptr;
+
+	static const FString ContextString(TEXT("Enemy Spawn Context"));
+	FBWEnemyData* Data = GI->EnemyDataTable->FindRow<FBWEnemyData>(EnemyID, ContextString);
+	if (!Data) UE_LOG(LogTemp, Error, TEXT("[BWCombat] 적 표에 없는 ID: %s (DT_Encounters 확인)"), *EnemyID.ToString());
+	AGridTile* TargetTile = GetTileAtCoordinate(Coord);
+	if (!Data || !Data->EnemyClass || !TargetTile) return nullptr;
+
+	FVector SpawnLoc = TargetTile->GetActorLocation() + FVector(0, 0, 20.0f);
+	FActorSpawnParameters Params;
+	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	ABWCharacter* NewEnemy = GetWorld()->SpawnActor<ABWCharacter>(Data->EnemyClass, SpawnLoc, GetFacingRotation(FIntPoint(-1, 0)), Params); // 적은 아군 쪽을 본다
+	if (!NewEnemy) return nullptr;
+
+	NewEnemy->OwnGridCoordinate = Coord;
+	NewEnemy->bIsEnemy = true;
+	NewEnemy->EnemyDisplayName = Data->EnemyDisplayName;
+	NewEnemy->EnemyDescription = Data->EnemyDescription;
+	DeployedCharacters.Add(NewEnemy);
+
+	// [추가] 적 전용 모델 (측정 봇은 건너뛴다)
+	UStaticMesh* Model = UBWAutoPlayer::IsActive() ? nullptr : Data->ModelMesh.LoadSynchronous();
+	if (Model)
+	{
+		TArray<UMeshComponent*> OldMeshes;
+		NewEnemy->GetComponents<UMeshComponent>(OldMeshes);
+		// 머리 위 체력 위젯도 UMeshComponent라서 빼야 한다
+		for (UMeshComponent* Old : OldMeshes)
+		{
+			if (!Old->IsA<UWidgetComponent>()) Old->SetVisibility(false, true);
+		}
+
+		UStaticMeshComponent* Comp = NewObject<UStaticMeshComponent>(NewEnemy, TEXT("EnemyModel"));
+		Comp->SetupAttachment(NewEnemy->GetRootComponent());
+		Comp->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Comp->SetStaticMesh(Model);
+		const FBox Box = Model->GetBoundingBox();
+		// 높이로 맞추되, 옆으로 넓은 모델이 옆 칸을 덮지 않게 폭을 제한한다
+		const float MaxWidth = FMath::Max(120.0f, Data->ModelHeight * 0.8f);
+		const float Scale = FMath::Min(Data->ModelHeight / FMath::Max(1.0f, Box.GetSize().Z),
+			MaxWidth / FMath::Max3(1.0f, (float)Box.GetSize().X, (float)Box.GetSize().Y));
+		Comp->SetRelativeScale3D(FVector(Scale));
+		Comp->SetRelativeRotation(FRotator(0.0f, Data->ModelYaw, 0.0f));
+		Comp->SetRelativeLocation(FVector(0.0f, 0.0f, -NewEnemy->GetSimpleCollisionHalfHeight() - Box.Min.Z * Scale));
+		Comp->RegisterComponent();
+		NewEnemy->AddInstanceComponent(Comp);
+
+		// 외곽선: 같은 모델을 한 겹 더 씌운다
+		static const FSoftObjectPath OutlinePath(TEXT("/Game/TripoModels/Toon/MI_EnemyOutline.MI_EnemyOutline"));
+		static constexpr bool bUseEnemyOutline = false; // 한쪽에만 뭉쳐 나와 꺼 둠
+		UMaterialInterface* Outline = bUseEnemyOutline ? Cast<UMaterialInterface>(OutlinePath.TryLoad()) : nullptr;
+		if (Outline)
+		{
+			UStaticMeshComponent* Hull = NewObject<UStaticMeshComponent>(NewEnemy, TEXT("EnemyOutline"));
+			Hull->SetupAttachment(Comp);
+			Hull->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			Hull->SetCastShadow(false);
+			Hull->SetStaticMesh(Model);
+			Hull->SetMaterial(0, Outline);
+			Hull->RegisterComponent();
+			NewEnemy->AddInstanceComponent(Hull);
+		}
+	}
+
+	// 체력바는 머리 위에 두면 적을 가리므로 발밑으로
+	if (NewEnemy->StatusWidgetComp)
+	{
+		NewEnemy->StatusWidgetComp->SetPivot(FVector2D(0.5f, 0.0f));
+		NewEnemy->StatusWidgetComp->SetRelativeLocation(FVector(0.0f, 0.0f, -NewEnemy->GetSimpleCollisionHalfHeight()));
+	}
+
+	NewEnemy->EnemyOrder = Order;
+	NewEnemy->MaxHP = Data->MaxHP;
+	NewEnemy->CurrentHP = Data->MaxHP;
+	NewEnemy->CombatPatterns = Data->CombatPatterns;
+	NewEnemy->CurrentPatternIndex = 0;
+	NewEnemy->SpeedDice = Data->SpeedDice;
+	NewEnemy->Block = Data->StartingBlock;
+	NewEnemy->MaxAttackBuff = Data->MaxAttackBuff;
+	NewEnemy->ActionRange = Data->ActionRange;
+	NewEnemy->KeepAwayBelow = Data->KeepAwayBelow;
+	NewEnemy->Phase2HPFraction = Data->Phase2HPFraction;
+	NewEnemy->Phase2Patterns = Data->Phase2Patterns;
+	NewEnemy->Phase2Block = Data->Phase2Block;
+	NewEnemy->SummonEnemy = Data->SummonEnemy;
+	NewEnemy->MaxSummons = Data->MaxSummons;
+	NewEnemy->Phase3HPFraction = Data->Phase3HPFraction;
+	NewEnemy->Phase3Patterns = Data->Phase3Patterns;
+	NewEnemy->Phase3Block = Data->Phase3Block;
+	NewEnemy->ReviveFraction = Data->ReviveFraction;
+	NewEnemy->TurnSelfDamage = Data->TurnSelfDamage;
+	NewEnemy->TurnSelfBuff = Data->TurnSelfBuff;
+	NewEnemy->EnrageTurn = Data->EnrageTurn;
+	NewEnemy->EnrageBuff = Data->EnrageBuff;
+	NewEnemy->GoldSteal = Data->GoldSteal;
+	NewEnemy->bBreaksObstacles = Data->bBreaksObstacles;
+	NewEnemy->BreakBuff = Data->BreakBuff;
+	NewEnemy->bMirrorCounter = Data->bMirrorCounter;
+	NewEnemy->LastWishFraction = Data->LastWishFraction;
+	NewEnemy->LastWishTurns = Data->LastWishTurns;
+
+	if (CharacterPlacementSound) UGameplayStatics::PlaySoundAtLocation(GetWorld(), CharacterPlacementSound, SpawnLoc);
+	return NewEnemy;
+}
+
+ABWCharacter* AGridManager::SummonBeside(ABWCharacter* Summoner)
+{
+	if (!Summoner || Summoner->SummonEnemy.IsNone()) return nullptr;
+	int32 Alive = 0, NextOrder = 0;
+	for (const ABWCharacter* Char : DeployedCharacters)
+	{
+		if (!Char || !Char->bIsEnemy) continue;
+		NextOrder = FMath::Max(NextOrder, Char->EnemyOrder + 1);
+		if (Char->SummonedBy == Summoner && Char->CurrentHP > 0) ++Alive;
+	}
+	if (Alive >= Summoner->MaxSummons) return nullptr;
+
+	FIntPoint Best;
+	if (!FindFreeCellNear(Summoner->OwnGridCoordinate, Best)) return nullptr;
+	ABWCharacter* Summon = SpawnEnemyAt(Summoner->SummonEnemy, Best, NextOrder);
+	if (Summon) Summon->SummonedBy = Summoner;
+	return Summon;
+}
+
+bool AGridManager::FindFreeCellNear(FIntPoint Coord, FIntPoint& OutCell)
+{
+	if (IsTileWalkable(Coord)) { OutCell = Coord; return true; }
+	TMap<FIntPoint, int32> Distance;
+	TMap<FIntPoint, FIntPoint> Parent;
+	BuildMoveField(Coord, 4, true, Distance, Parent, true);
+	int32 BestDist = MAX_int32;
+	for (const TPair<FIntPoint, int32>& Cell : Distance)
+	{
+		if (Cell.Value > 0 && Cell.Value < BestDist) { BestDist = Cell.Value; OutCell = Cell.Key; }
+	}
+	return BestDist != MAX_int32;
+}
+
+void AGridManager::BreakObstacle(FIntPoint Coord)
+{
+	if (!WallCoords.Remove(Coord)) return;
+	if (AGridTile* Tile = GetTileAtCoordinate(Coord))
+	{
+		Tile->DefaultZoneState = ETileState::None;
+		Tile->SetTileState(ETileState::None);
+	}
+	if (Decor) Decor->RemoveObstacle(Coord);
 }
 
 void AGridManager::CheckVictoryCondition()
 {
 	if (bBattleOver) return;
+
+	// 소환수는 원래 있던 적이 모두 쓰러지면 함께 사라진다
+	bool bAnyOriginalAlive = false;
+	TArray<ABWCharacter*> LeftoverSummons;
+	for (ABWCharacter* Char : DeployedCharacters)
+	{
+		if (!Char || !Char->bIsEnemy || Char->IsActorBeingDestroyed()) continue;
+		if (Char->SummonedBy) { if (Char->CurrentHP > 0) LeftoverSummons.Add(Char); }
+		else bAnyOriginalAlive |= Char->CurrentHP > 0 || Char->bRevivePending;
+	}
+	if (!bAnyOriginalAlive) for (ABWCharacter* Summon : LeftoverSummons) Summon->TakeFixedDamage(Summon->CurrentHP, TEXT("소멸"));
 
 	bool bAreAnyEnemiesAlive = false;
 	bool bIsPlayerAlive = false;
@@ -207,7 +346,7 @@ void AGridManager::CheckVictoryCondition()
 	for (ABWCharacter* Char : DeployedCharacters)
 	{
 		if (!Char || Char->IsActorBeingDestroyed()) continue;
-		if (Char->bIsEnemy) bAreAnyEnemiesAlive |= Char->CurrentHP > 0;
+		if (Char->bIsEnemy) bAreAnyEnemiesAlive |= Char->CurrentHP > 0 || Char->bRevivePending;
 		else { bHasPlayer = true; bIsPlayerAlive |= Char->CurrentHP > 0; }
 	}
 
@@ -221,8 +360,7 @@ void AGridManager::CheckVictoryCondition()
 #endif
 		// [추가] 판이 끝났으니 이어하기 저장을 지운다
 		if (UBWGameInstance* GI = Cast<UBWGameInstance>(GetGameInstance())) GI->DeleteSavedRun();
-		FTimerHandle DefeatTimer;
-		GetWorldTimerManager().SetTimer(DefeatTimer, [this]() { UGameplayStatics::OpenLevel(GetWorld(), TEXT("TitleLevel")); }, 2.0f, false);
+		ShowBattleResultAfterDelay(false);
 		return;
 	}
 
@@ -234,16 +372,50 @@ void AGridManager::CheckVictoryCondition()
 		{
 			// [수정] 보상 생성(방치 보너스 반영) + 보스면 막 클리어 + 이어하기 저장. 보상은 지도 화면에서 고른다
 			GI->OnBattleWon();
-			UGameplayStatics::OpenLevel(GetWorld(), TEXT("/Game/System/Level/MapLevel"));
+			ShowBattleResultAfterDelay(true);
 		}
 	}
 }
 
+void AGridManager::ShowBattleResultAfterDelay(bool bVictory)
+{
+	if (UBWAutoPlayer::IsActive()) return; // 측정 봇은 bBattleOver를 보고 다음으로 넘어간다
+	// 마지막 말이 쓰러지는 연출(0.7초)을 보고 나서 결과 화면을 띄운다. 컨트롤러가 없으면 바로 넘어간다
+	FTimerHandle ResultTimer;
+	GetWorldTimerManager().SetTimer(ResultTimer, [this, bVictory]()
+	{
+		if (ABWPlayerController* PC = Cast<ABWPlayerController>(GetWorld()->GetFirstPlayerController())) PC->ShowBattleResult(bVictory);
+		else UGameplayStatics::OpenLevel(GetWorld(), bVictory ? TEXT("/Game/System/Level/MapLevel") : TEXT("TitleLevel"));
+	}, ResultScreenDelay, false);
+}
+
+void AGridManager::ShowManaLines(const TArray<int32>& Rows)
+{
+	for (auto& Elem : GridMap)
+	{
+		if (WallCoords.Contains(Elem.Key)) continue;
+		Elem.Value->DefaultZoneState = Rows.Contains(Elem.Key.X) ? ETileState::ManaLine : ETileState::None;
+		Elem.Value->SetTileState(ETileState::None);
+	}
+}
+
+void AGridManager::ResetForAutoBattle()
+{
+	TArray<AActor*> Actors;
+	UGameplayStatics::GetAllActorsOfClass(GetWorld(), ABWCharacter::StaticClass(), Actors);
+	for (AActor* Actor : Actors) Actor->Destroy();
+	DeployedCharacters.Empty();
+	WallCoords.Empty();
+	TerrainMap.Empty();
+	bBattleOver = false;
+	bIsGridReady = false;
+	CombatRandom.Initialize(FMath::Rand());
+	SetupTerrain();
+	SpawnEnemies();
+}
+
 void AGridManager::FinalizeGridColors()
 {
-	// [추가] 이번 전투의 장애물 벽
-	if (UBWGameInstance* GI = Cast<UBWGameInstance>(GetGameInstance())) WallCoords = GI->PendingWallTiles;
-
 	for (auto& Elem : GridMap)
 	{
 		if (WallCoords.Contains(Elem.Key))
@@ -290,7 +462,12 @@ void AGridManager::BeginPlay()
 	UE_LOG(LogTemp, Log, TEXT("[BWCombat] Combat random seed: %d"), CombatRandom.GetInitialSeed());
 
 	GenerateGrid();
+	if (UBWAutoPlayer::IsActive()) return; // 측정 봇은 전투마다 ResetForAutoBattle로 시작한다
 	StartDiagonalWave();
+
+	// [수정] 차원 바닥·풍경·조명은 판이 깔리기 전에 바로 세운다 (맨땅이 보이지 않게).
+	// 컨트롤러가 전투 카메라를 잡은 뒤여야 풍경 방향이 맞으므로 다음 틱에 한다
+	GetWorldTimerManager().SetTimerForNextTick(this, &AGridManager::SetupTerrain);
 }
 
 void AGridManager::DrawSkillPreview(FIntPoint OriginIdx, FIntPoint TargetIdx, FBWCardData CardData)
@@ -414,6 +591,8 @@ void AGridManager::DrawMovementPreview(FIntPoint OriginIdx, int32 MoveRange)
 	{
 		if (AGridTile* Tile = GetTileAtCoordinate(Reach.Key)) Tile->SetTileState(ETileState::MoveRange);
 	}
+	// 이동 범위가 적의 예상 경로를 덮지 않게 위에 다시 그린다 (이동한 뒤의 새 경로가 보여야 한다)
+	RefreshEnemyIntents();
 }
 
 void AGridManager::SetWallTiles(const TArray<FIntPoint>& Coords)
@@ -426,6 +605,84 @@ void AGridManager::SetWallTiles(const TArray<FIntPoint>& Coords)
 		else if (Elem.Value->DefaultZoneState == ETileState::Wall) Elem.Value->DefaultZoneState = ETileState::None;
 		Elem.Value->SetTileState(Elem.Value->DefaultZoneState);
 	}
+}
+
+void AGridManager::SetupTerrain()
+{
+	UBWGameInstance* GI = Cast<UBWGameInstance>(GetGameInstance());
+	TerrainDimension = GI ? GI->GetCurrentDimension() : EDimensionType::None;
+
+	// 적이 설 칸에는 아무것도 놓지 않는다 (적은 판이 깔린 뒤에 스폰되므로 요청 좌표를 쓴다)
+	TArray<FIntPoint> Reserved;
+	if (GI)
+	{
+		for (const FEnemySpawnRequest& Request : GI->PendingEnemyRequests) Reserved.Add(Request.Coordinate);
+	}
+
+	const FBWTerrainLayout Layout = UBWTerrainRules::GenerateLayout(TerrainDimension, Width, Height, AllyZoneColumns + 1, Reserved,
+		GI ? GI->PendingWallTiles : TArray<FIntPoint>(), CombatRandom);
+	WallCoords = Layout.Walls;
+	TerrainMap = Layout.Terrain;
+	UE_LOG(LogTemp, Warning, TEXT("[BWCombat] Terrain (%s): %d obstacles, %d %s tiles"), *UBWMapRules::GetDimensionName(TerrainDimension).ToString(),
+		WallCoords.Num(), TerrainMap.Num(), TerrainMap.Num() > 0 ? *UBWTerrainRules::GetTerrainName(UBWTerrainRules::GetTerrainForDimension(TerrainDimension)).ToString() : TEXT("-"));
+
+	if (!UBWAutoPlayer::IsActive())
+	{
+		if (Decor) Decor->Destroy();
+		FActorSpawnParameters Params;
+		Params.Owner = this;
+		UClass* Class = DecorClass ? DecorClass.Get() : ABWBattlefieldDecor::StaticClass();
+		Decor = GetWorld()->SpawnActor<ABWBattlefieldDecor>(Class, FTransform::Identity, Params);
+		if (Decor) Decor->Build(this, TerrainDimension, Layout, CombatRandom.RandHelper(MAX_int32));
+	}
+	if (ABWPlayerController* PC = Cast<ABWPlayerController>(GetWorld()->GetFirstPlayerController())) PC->SetBattlefield(TerrainDimension, false);
+}
+
+EBWTerrainType AGridManager::GetTerrainAt(FIntPoint Coord) const
+{
+	const EBWTerrainType* Type = TerrainMap.Find(Coord);
+	return Type ? *Type : EBWTerrainType::None;
+}
+
+int32 AGridManager::ApplyEnteredTerrain(ABWCharacter* Mover, const TArray<FIntPoint>& Cells)
+{
+	if (!Mover) return 0;
+	int32 Total = 0;
+	for (const FIntPoint& Cell : Cells)
+	{
+		if (Mover->CurrentHP <= 0 || Mover->IsActorBeingDestroyed()) break;
+		if (GetTerrainAt(Cell) == EBWTerrainType::Thorns && (Mover->bIsEnemy || !Mover->AugmentTotals.Has(EBWAugStat::ThornImmune)))
+		{
+			Total += Mover->TakeFixedDamage(UBWTerrainRules::ThornsDamage, TEXT("가시덤불"));
+		}
+	}
+	return Total;
+}
+
+void AGridManager::ApplyEndOfTurnTerrain(ABWCharacter* Character)
+{
+	if (!Character || Character->CurrentHP <= 0 || Character->IsActorBeingDestroyed()) return;
+	if (GetTerrainAt(Character->OwnGridCoordinate) == EBWTerrainType::Cover)
+	{
+		// 쌓이지 않는 임시 보호막: 다음 자기 턴이 시작되면 사라진다
+		Character->CoverShield = UBWTerrainRules::CoverBlock;
+		Character->ShowPopup(FString::Printf(TEXT("방벽 보호막 %d"), UBWTerrainRules::CoverBlock), FLinearColor(0.6f, 0.8f, 1.0f));
+	}
+}
+
+bool AGridManager::DescribeTile(FIntPoint Coord, FString& OutTitle, FString& OutDescription) const
+{
+	if (WallCoords.Contains(Coord))
+	{
+		OutTitle = UBWTerrainRules::GetObstacleName(UBWTerrainRules::GetObstacleStyle(TerrainDimension)).ToString();
+		OutDescription = TEXT("지나갈 수 없는 장애물. 밀려서 부딪히면 벽에 부딪힌 것으로 친다");
+		return true;
+	}
+	const EBWTerrainType Type = GetTerrainAt(Coord);
+	if (Type == EBWTerrainType::None) return false;
+	OutTitle = UBWTerrainRules::GetTerrainName(Type).ToString();
+	OutDescription = UBWTerrainRules::GetTerrainDescription(Type).ToString();
+	return true;
 }
 
 bool AGridManager::IsWallOrOutside(FIntPoint Coord) const
@@ -469,7 +726,7 @@ ABWCharacter* AGridManager::FindContactOpponent(FIntPoint Coord, bool bMoverIsEn
 	return nullptr;
 }
 
-void AGridManager::BuildMoveField(FIntPoint Origin, int32 MaxSteps, bool bMoverIsEnemy, TMap<FIntPoint, int32>& OutDistance, TMap<FIntPoint, FIntPoint>& OutParent)
+void AGridManager::BuildMoveField(FIntPoint Origin, int32 MaxSteps, bool bMoverIsEnemy, TMap<FIntPoint, int32>& OutDistance, TMap<FIntPoint, FIntPoint>& OutParent, bool bPassThicket, bool bPassWalls)
 {
 	static const FIntPoint Dirs[] = { FIntPoint(1, 0), FIntPoint(-1, 0), FIntPoint(0, 1), FIntPoint(0, -1) };
 
@@ -488,11 +745,19 @@ void AGridManager::BuildMoveField(FIntPoint Origin, int32 MaxSteps, bool bMoverI
 
 		// 이동하다 상대와 접촉하면 그 칸에서 멈춘다 (출발 칸은 이미 접촉 중이어도 떠날 수 있음)
 		if (Current != Origin && FindContactOpponent(Current, bMoverIsEnemy)) continue;
+		// [추가] 타이가 깊은 수풀: 들어선 칸에서 이번 이동이 멈춘다
+		if (!bPassThicket && Current != Origin && GetTerrainAt(Current) == EBWTerrainType::Thicket)
+		{
+			const APlayerController* PC = GetWorld()->GetFirstPlayerController();
+			const ABWCharacter* Player = PC ? Cast<ABWCharacter>(PC->GetPawn()) : nullptr;
+			if (bMoverIsEnemy || !Player || !Player->AugmentTotals.Has(EBWAugStat::ThicketImmune)) continue;
+		}
 
 		for (const FIntPoint& Dir : Dirs)
 		{
 			const FIntPoint Next = Current + Dir;
-			if (OutDistance.Contains(Next) || !IsTileWalkable(Next)) continue;
+			if (OutDistance.Contains(Next)) continue;
+			if (!IsTileWalkable(Next) && !(bPassWalls && GridMap.Contains(Next) && WallCoords.Contains(Next) && !GetCharacterAtCoordinate(Next))) continue;
 			OutDistance.Add(Next, Dist + 1);
 			OutParent.Add(Next, Current);
 			Queue.Add(Next);
@@ -509,7 +774,8 @@ TArray<FIntPoint> AGridManager::FindRushPath(FIntPoint Origin, FIntPoint Target,
 	// 거리 제한 없이 펼쳐서 '가장 가까운 접촉 칸'을 고른 뒤 속도만큼 자른다
 	TMap<FIntPoint, int32> Distance;
 	TMap<FIntPoint, FIntPoint> Parent;
-	BuildMoveField(Origin, Width * Height, bMoverIsEnemy, Distance, Parent);
+	// [수정] 깊은 수풀은 벽이 아니다: 여러 턴에 걸쳐 지나갈 길로 찾고, 이번 턴 이동만 수풀에서 끊는다
+	BuildMoveField(Origin, Width * Height, bMoverIsEnemy, Distance, Parent, true);
 
 	bool bFound = false;
 	FIntPoint Goal = Origin;
@@ -538,6 +804,58 @@ TArray<FIntPoint> AGridManager::FindRushPath(FIntPoint Origin, FIntPoint Target,
 
 	for (FIntPoint Step = Goal; Step != Origin; Step = Parent[Step]) Path.Insert(Step, 0);
 	if (Path.Num() > MaxSteps) Path.SetNum(MaxSteps);
+	const int32 ThicketIndex = Path.IndexOfByPredicate([this](const FIntPoint& Cell) { return GetTerrainAt(Cell) == EBWTerrainType::Thicket; });
+	if (ThicketIndex != INDEX_NONE) Path.SetNum(ThicketIndex + 1);
+	return Path;
+}
+
+TArray<FIntPoint> AGridManager::FindEnemyMovePath(ABWCharacter* Enemy, FIntPoint Target)
+{
+	TArray<FIntPoint> Path;
+	if (!Enemy) return Path;
+	if (Enemy->bBreaksObstacles)
+	{
+		// 장애물을 뚫고 곧장 온다
+		TMap<FIntPoint, int32> Field;
+		TMap<FIntPoint, FIntPoint> From;
+		const FIntPoint Start = Enemy->OwnGridCoordinate;
+		BuildMoveField(Start, Width * Height, true, Field, From, true, true);
+		static const FIntPoint Dirs[] = { FIntPoint(1, 0), FIntPoint(-1, 0), FIntPoint(0, 1), FIntPoint(0, -1) };
+		FIntPoint Goal = Start;
+		int32 Best = MAX_int32;
+		for (const FIntPoint& Dir : Dirs)
+		{
+			const int32* D = Field.Find(Target + Dir);
+			if (D && *D < Best) { Best = *D; Goal = Target + Dir; }
+		}
+		for (FIntPoint Step = Goal; Step != Start; Step = From[Step]) Path.Insert(Step, 0);
+		if (Path.Num() > Enemy->RolledSpeed) Path.SetNum(Enemy->RolledSpeed);
+		const int32 Thicket = Path.IndexOfByPredicate([this](const FIntPoint& Cell) { return GetTerrainAt(Cell) == EBWTerrainType::Thicket; });
+		if (Thicket != INDEX_NONE) Path.SetNum(Thicket + 1);
+		return Path;
+	}
+	if (Enemy->ActionRange <= 1) return FindRushPath(Enemy->OwnGridCoordinate, Target, Enemy->RolledSpeed, true);
+
+	// 사거리 끝에 가장 가까운 칸. 내가 KeepAwayBelow 안에 있는 칸은 피한다
+	TMap<FIntPoint, int32> Distance;
+	TMap<FIntPoint, FIntPoint> Parent;
+	const FIntPoint Origin = Enemy->OwnGridCoordinate;
+	// 물러날 때는 1칸씩만 (쫓아가면 잡힌다)
+	const int32 Gap0 = FMath::Abs(Target.X - Origin.X) + FMath::Abs(Target.Y - Origin.Y);
+	BuildMoveField(Origin, Gap0 <= Enemy->KeepAwayBelow ? FMath::Min(1, Enemy->RolledSpeed) : Enemy->RolledSpeed, true, Distance, Parent);
+	auto Cost = [&](const FIntPoint& Cell, int32 Steps)
+	{
+		const int32 Gap = FMath::Abs(Target.X - Cell.X) + FMath::Abs(Target.Y - Cell.Y);
+		return FMath::Abs(Gap - Enemy->ActionRange) * 2.0f + (Gap <= Enemy->KeepAwayBelow ? 6.0f : 0.0f) + Steps * 0.01f;
+	};
+	FIntPoint Best = Origin;
+	float BestCost = Cost(Origin, 0);
+	for (const TPair<FIntPoint, int32>& Cell : Distance)
+	{
+		const float C = Cost(Cell.Key, Cell.Value);
+		if (C < BestCost) { BestCost = C; Best = Cell.Key; }
+	}
+	for (FIntPoint Step = Best; Step != Origin; Step = Parent[Step]) Path.Insert(Step, 0);
 	return Path;
 }
 
@@ -559,7 +877,7 @@ TArray<FIntPoint> AGridManager::FindMovePath(FIntPoint Origin, FIntPoint Target,
 ABWCharacter* AGridManager::GetCharacterAtCoordinate(FIntPoint Coord)
 {
 	DeployedCharacters.RemoveAll([](ABWCharacter* C) { return C == nullptr || !C->IsValidLowLevel() || C->IsActorBeingDestroyed(); });
-	for (ABWCharacter* Char : DeployedCharacters) if (Char->OwnGridCoordinate == Coord) return Char;
+	for (ABWCharacter* Char : DeployedCharacters) if (Char->OwnGridCoordinate == Coord && !Char->bRevivePending) return Char;
 	return nullptr;
 }
 

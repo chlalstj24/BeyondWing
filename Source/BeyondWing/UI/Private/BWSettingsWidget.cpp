@@ -1,4 +1,5 @@
 #include "BeyondWing/UI/Public/BWSettingsWidget.h"
+#include "BeyondWing/UI/Public/BWSkin.h"
 #include "BeyondWing/Core/Public/BWGameInstance.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/Border.h"
@@ -196,8 +197,9 @@ void UBWSettingsWidget::BuildLayout()
 	Frame->SetPadding(FMargin(2.0f));
 	UBorder* Panel = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass());
 	Panel->SetBrushColor(FLinearColor(0.035f, 0.03f, 0.06f, 0.97f));
-	Panel->SetPadding(FMargin(48.0f, 36.0f));
+	Panel->SetPadding(FMargin(52.0f, 40.0f));
 	Frame->SetContent(Panel);
+	if (BWSkin::StylePanel(Panel)) { Frame->SetBrushColor(FLinearColor::Transparent); Frame->SetPadding(FMargin(0.0f)); }
 	if (UCanvasPanelSlot* FrameSlot = Root->AddChildToCanvas(Frame))
 	{
 		FrameSlot->SetAnchors(FAnchors(0.5f, 0.5f));
@@ -219,6 +221,14 @@ void UBWSettingsWidget::BuildLayout()
 	{
 		UButton* Button = WidgetTree->ConstructWidget<UButton>(UButton::StaticClass());
 		Button->SetBackgroundColor(Tint);
+		// 화살표 같은 한 글자 버튼은 원래 모양 그대로, 글자 버튼만 석판으로 (작은 버튼이라 여백은 얇게)
+		if (BWSkin::StyleButton(Button))
+		{
+			FButtonStyle Thin = Button->GetStyle();
+			Thin.SetNormalPadding(FMargin(22.0f, 6.0f));
+			Thin.SetPressedPadding(FMargin(22.0f, 7.0f, 22.0f, 5.0f));
+			Button->SetStyle(Thin);
+		}
 		UTextBlock* Text = MakeText(FontSize, FLinearColor::White, ETextJustify::Center);
 		Text->SetText(Label);
 		if (UButtonSlot* ContentSlot = Cast<UButtonSlot>(Button->SetContent(Text))) ContentSlot->SetPadding(FMargin(12.0f, 4.0f));

@@ -30,7 +30,10 @@ public:
 	void SetupFromEnemyPattern(const FBWEnemyPattern& Pattern);
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tooltip")
-	float MaxWrapWidth = 700.0f; // [수정] 줄바꿈 너비 2배 확장 (350 -> 700)
+	float MaxWrapWidth = 620.0f; // 이 폭까지는 내용만큼 넓어지고, 넘으면 줄바꿈 (고정 폭 아님)
+
+	virtual void NativeConstruct() override;
+	virtual void NativeOnInitialized() override;
 
 protected:
 	UPROPERTY(meta = (BindWidget))

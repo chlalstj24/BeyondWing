@@ -1,5 +1,19 @@
 #include "BeyondWing/Core/Public/BWGameInstance.h"
+#include "BeyondWing/UI/Public/BWDuelWidget.h"
+#include "Blueprint/WidgetBlueprintLibrary.h"
+#include "Framework/Application/IInputProcessor.h"
+#include "Framework/Application/SlateApplication.h"
+#include "BeyondWing/Core/Public/BWPlayerController.h"
+#include "BeyondWing/UI/Public/BWAugmentSelectWidget.h"
+#include "BeyondWing/UI/Public/BWBattleResultWidget.h"
+#include "BeyondWing/UI/Public/BWClassSelectWidget.h"
+#include "BeyondWing/UI/Public/BWGuardChoiceWidget.h"
+#include "BeyondWing/UI/Public/BWMapWidget.h"
+#include "BeyondWing/UI/Public/BWPauseWidget.h"
+#include "BeyondWing/UI/Public/BWSettingsWidget.h"
+#include "BeyondWing/UI/Public/BWTitleMenuWidget.h"
 #include "BeyondWing/Combat/Public/BWAugmentRules.h"
+#include "BeyondWing/Core/Public/BWAutoPlayer.h"
 #include "BeyondWing/Combat/Public/BWDuelRules.h"
 #include "BeyondWing/Core/Public/BWRunSaveGame.h"
 #include "BeyondWing/Core/Public/BWMapRules.h"
@@ -25,9 +39,60 @@ UBWGameInstance::UBWGameInstance()
 const FString UBWGameInstance::RunSaveSlot = TEXT("BWRun");
 static const TCHAR* BWSettingsSection = TEXT("/Script/BeyondWing.BWSettings");
 
+void UBWGameInstance::BeginBattleSnapshot()
+{
+	bInBattle = true;
+	BattleStartHP = PlayerCurrentHP;
+	BattleStartSoul = SoulBullets;
+	BattleStartBonus = MapBonus;
+}
+
+namespace BWKeys
+{
+	class FProcessor : public IInputProcessor
+	{
+	public:
+		explicit FProcessor(UBWGameInstance* InGI) : GI(InGI) {}
+		virtual void Tick(const float, FSlateApplication&, TSharedRef<ICursor>) override {}
+		virtual bool HandleKeyDownEvent(FSlateApplication&, const FKeyEvent& Event) override
+		{
+			UBWGameInstance* Instance = GI.Get();
+			if (!Instance || Event.IsRepeat()) return false;
+			if (Event.GetKey() == EKeys::Escape) return Instance->HandleEscapeKey();
+			if (Event.GetKey() == EKeys::SpaceBar || Event.GetKey() == EKeys::Enter) return Instance->HandleConfirmKey();
+			return false;
+		}
+		virtual bool HandleMouseButtonDownEvent(FSlateApplication&, const FPointerEvent& Event) override
+		{
+			UBWGameInstance* Instance = GI.Get();
+			return Instance && Event.GetEffectingButton() == EKeys::LeftMouseButton && Instance->HandleDuelInput();
+		}
+	private:
+		TWeakObjectPtr<UBWGameInstance> GI;
+	};
+
+	template <typename T> static T* FindOnScreen(UWorld* World)
+	{
+		TArray<UUserWidget*> Found;
+		UWidgetBlueprintLibrary::GetAllWidgetsOfClass(World, Found, T::StaticClass(), false);
+		for (UUserWidget* Widget : Found)
+		{
+			if (Widget && Widget->IsInViewport()) return Cast<T>(Widget);
+		}
+		return nullptr;
+	}
+}
+
 void UBWGameInstance::Init()
 {
 	Super::Init();
+
+	// [추가] Esc·Space는 입력 초점과 상관없이 받는다 (PIE의 Esc 종료보다 먼저)
+	if (FSlateApplication::IsInitialized() && !UBWAutoPlayer::IsActive())
+	{
+		InputProcessor = MakeShared<BWKeys::FProcessor>(this);
+		FSlateApplication::Get().RegisterInputPreProcessor(InputProcessor);
+	}
 	// 저장해 둔 전체 음량을 켜자마자 적용
 	float SavedVolume = 1.0f;
 	if (GConfig && GConfig->GetFloat(BWSettingsSection, TEXT("MasterVolume"), SavedVolume, GGameUserSettingsIni)) SetMasterVolume(SavedVolume, false);
@@ -46,6 +111,7 @@ void UBWGameInstance::SetMasterVolume(float Volume, bool bSave)
 
 bool UBWGameInstance::SaveRun()
 {
+	if (UBWAutoPlayer::IsActive()) return false; // 측정 봇이 플레이어의 이어하기를 덮어쓰지 않게
 	UBWRunSaveGame* Save = Cast<UBWRunSaveGame>(UGameplayStatics::CreateSaveGameObject(UBWRunSaveGame::StaticClass()));
 	if (!Save) return false;
 	Save->SavedAt = FDateTime::Now();
@@ -57,6 +123,7 @@ bool UBWGameInstance::SaveRun()
 	Save->PlayerINT = PlayerINT;
 	Save->PlayerFTH = PlayerFTH;
 	Save->PlayerDeckCount = PlayerDeckCount;
+	Save->SoulBullets = SoulBullets;
 	Save->CurrentStage = CurrentStage;
 	Save->CurrentGold = CurrentGold;
 	Save->OwnedAugments = OwnedAugments;
@@ -73,9 +140,19 @@ bool UBWGameInstance::SaveRun()
 	Save->MapBonus = MapBonus;
 	Save->PendingCardRemovals = PendingCardRemovals;
 	Save->bActCleared = bActCleared;
+	Save->PendingStatPoints = PendingStatPoints;
+	Save->PlayerDefensePoints = PlayerDefensePoints;
 	Save->AugmentPickedAct = AugmentPickedAct;
+	Save->AugmentBossPickedAct = AugmentBossPickedAct;
 	Save->RunDeck = RunDeck;
 	Save->MapUsedCards = MapUsedCards;
+	if (bInBattle)
+	{
+		Save->bResumeBattle = true;
+		Save->PlayerCurrentHP = BattleStartHP;
+		Save->SoulBullets = BattleStartSoul;
+		Save->MapBonus = BattleStartBonus;
+	}
 	const bool bOk = UGameplayStatics::SaveGameToSlot(Save, RunSaveSlot, 0);
 	UE_LOG(LogTemp, Warning, TEXT("[BWSave] Run saved (%s): step %d, HP %d/%d"), bOk ? TEXT("ok") : TEXT("FAILED"), CurrentStep, PlayerCurrentHP, PlayerMaxHP);
 	return bOk;
@@ -86,6 +163,8 @@ bool UBWGameInstance::LoadRun()
 	const UBWRunSaveGame* Save = Cast<UBWRunSaveGame>(UGameplayStatics::LoadGameFromSlot(RunSaveSlot, 0));
 	if (!Save || Save->Version != UBWRunSaveGame::CurrentVersion || Save->WorldMapData.Num() == 0) return false;
 	SelectedClass = Save->SelectedClass;
+	bResumeBattle = Save->bResumeBattle;
+	bInBattle = false;
 	PlayerMaxHP = Save->PlayerMaxHP;
 	PlayerCurrentHP = Save->PlayerCurrentHP;
 	PlayerPHA = Save->PlayerPHA;
@@ -93,6 +172,7 @@ bool UBWGameInstance::LoadRun()
 	PlayerINT = Save->PlayerINT;
 	PlayerFTH = Save->PlayerFTH;
 	PlayerDeckCount = Save->PlayerDeckCount;
+	SoulBullets = Save->SoulBullets;
 	CurrentStage = Save->CurrentStage;
 	CurrentGold = Save->CurrentGold;
 	OwnedAugments = Save->OwnedAugments;
@@ -109,13 +189,71 @@ bool UBWGameInstance::LoadRun()
 	MapBonus = Save->MapBonus;
 	PendingCardRemovals = Save->PendingCardRemovals;
 	bActCleared = Save->bActCleared;
+	PendingStatPoints = Save->PendingStatPoints;
+	PlayerDefensePoints = Save->PlayerDefensePoints;
 	AugmentPickedAct = Save->AugmentPickedAct;
+	AugmentBossPickedAct = Save->AugmentBossPickedAct;
 	RunDeck = Save->RunDeck;
 	MapUsedCards = Save->MapUsedCards;
 	PlayerDeckCount = RunDeck.Num() > 0 ? RunDeck.Num() : PlayerDeckCount;
 	AugmentChoices.Reset();
 	LastArrival = FBWArrivalReport();
 	UE_LOG(LogTemp, Warning, TEXT("[BWSave] Run loaded: %s, step %d, HP %d/%d"), *UEnum::GetValueAsString(SelectedClass), CurrentStep, PlayerCurrentHP, PlayerMaxHP);
+	return true;
+}
+
+void UBWGameInstance::Shutdown()
+{
+	if (InputProcessor.IsValid() && FSlateApplication::IsInitialized()) FSlateApplication::Get().UnregisterInputPreProcessor(InputProcessor);
+	InputProcessor.Reset();
+	Super::Shutdown();
+}
+
+bool UBWGameInstance::HandleDuelInput()
+{
+	UWorld* World = GetWorld();
+	UBWDuelWidget* Duel = World ? BWKeys::FindOnScreen<UBWDuelWidget>(World) : nullptr;
+	return Duel && Duel->HandleAdvanceInput();
+}
+
+bool UBWGameInstance::HandleConfirmKey()
+{
+	if (HandleDuelInput()) return true;
+	UWorld* World = GetWorld();
+	UBWBattleResultWidget* Result = World ? BWKeys::FindOnScreen<UBWBattleResultWidget>(World) : nullptr;
+	if (!Result || !Result->IsShowing()) return false;
+	Result->Continue();
+	return true;
+}
+
+bool UBWGameInstance::HandleEscapeKey()
+{
+	UWorld* World = GetWorld();
+	if (!World) return false;
+	using namespace BWKeys;
+
+	// 위에 뜬 창부터 닫는다
+	if (UBWSettingsWidget* Settings = FindOnScreen<UBWSettingsWidget>(World)) { Settings->Close(); return true; }
+	if (UBWPauseWidget* Pause = FindOnScreen<UBWPauseWidget>(World)) { Pause->Close(); return true; }
+	if (FindOnScreen<UBWGuardChoiceWidget>(World)) return false; // 마나 가드 창은 Esc = 안 함
+	if (FindOnScreen<UBWBattleResultWidget>(World) || FindOnScreen<UBWAugmentSelectWidget>(World) || FindOnScreen<UBWClassSelectWidget>(World) || FindOnScreen<UBWTitleMenuWidget>(World)) return true;
+
+	if (UBWMapWidget* Map = FindOnScreen<UBWMapWidget>(World))
+	{
+		if (Map->IsModalOpen()) { Map->CloseModalByEscape(); return true; }
+	}
+	if (ABWPlayerController* PC = Cast<ABWPlayerController>(World->GetFirstPlayerController()))
+	{
+		if (PC->CancelBattleSelection()) return true;
+	}
+	if (APlayerController* Owner = World->GetFirstPlayerController())
+	{
+		if (UBWPauseWidget* Pause = CreateWidget<UBWPauseWidget>(Owner, UBWPauseWidget::StaticClass()))
+		{
+			Pause->AddToViewport(900);
+			UGameplayStatics::SetGamePaused(World, true);
+		}
+	}
 	return true;
 }
 
@@ -129,6 +267,7 @@ bool UBWGameInstance::HasSavedRun() const
 
 void UBWGameInstance::DeleteSavedRun()
 {
+	if (UBWAutoPlayer::IsActive()) return;
 	if (HasSavedRun()) UGameplayStatics::DeleteGameInSlot(RunSaveSlot, 0);
 }
 
@@ -139,9 +278,9 @@ FText UBWGameInstance::GetSavedRunSummary() const
 	if (!Save) return FText::GetEmpty();
 	const FBWClassData* Data = FindClassData(Save->SelectedClass);
 	const FString Name = Data ? Data->DisplayName.ToString() : UEnum::GetDisplayValueAsText(Save->SelectedClass).ToString();
-	const FString Floor = Save->CurrentStep >= UBWMapRules::BossStep ? FString::Printf(TEXT("%d막 보스"), Save->CurrentStage)
-		: Save->CurrentStep >= 0 ? FString::Printf(TEXT("%d막 %d칸"), Save->CurrentStage, Save->CurrentStep + 1)
-		: FString::Printf(TEXT("%d막 시작"), Save->CurrentStage);
+	const FString Floor = Save->CurrentStep >= UBWMapRules::BossStep ? FString::Printf(TEXT("%d층 보스"), Save->CurrentStage)
+		: Save->CurrentStep >= 0 ? FString::Printf(TEXT("%d층 %d칸"), Save->CurrentStage, Save->CurrentStep + 1)
+		: FString::Printf(TEXT("%d층 시작"), Save->CurrentStage);
 	return FText::FromString(FString::Printf(TEXT("%s · %s · HP %d/%d"), *Name, *Floor, Save->PlayerCurrentHP, Save->PlayerMaxHP));
 }
 
@@ -219,6 +358,8 @@ bool UBWGameInstance::GetClassStartingDeck(EClassType ClassType, TArray<FName>& 
 
 void UBWGameInstance::BeginNewRun(EClassType ClassType)
 {
+	bInBattle = false;
+	bResumeBattle = false;
 	SelectedClass = ClassType;
 	const FBWClassStartStats Stats = GetClassStartStats(ClassType);
 	PlayerPHA = Stats.PHA;
@@ -230,12 +371,16 @@ void UBWGameInstance::BeginNewRun(EClassType ClassType)
 
 	CurrentStage = 1;
 	CurrentGold = 0;
+	SoulBullets = ClassType == EClassType::TEC ? 1 : 0;
 	OwnedAugments.Reset();
 	AugmentChoices.Reset();
 	PendingRewards.Reset();
 	PendingCardRemovals = 0;
 	bActCleared = false;
 	AugmentPickedAct = 0;
+	AugmentBossPickedAct = 0;
+	PendingStatPoints = 0;
+	PlayerDefensePoints = 0;
 	WorldMapData.Reset();
 	CurrentStep = -1;
 	CurrentDimIdx = -1;
@@ -275,7 +420,7 @@ const TArray<FName>& UBWGameInstance::BeginAugmentPick(int32 Act, EClassType Pla
 	TArray<FName> Names;
 	TArray<FBWAugmentData> Rows;
 	GetAugmentRows(Names, Rows);
-	AugmentChoices = UBWAugmentRules::PickCandidates(Names, Rows, Act, PlayerClass, OwnedAugments, {}, UBWAugmentRules::ChoicesPerPick, AugmentRandom);
+	AugmentChoices = UBWAugmentRules::PickByKind(Names, Rows, PlayerClass, OwnedAugments, {}, AugmentRandom);
 
 	UE_LOG(LogTemp, Warning, TEXT("[BWAugment] Act %d picks: %s"), Act, *FString::JoinBy(AugmentChoices, TEXT(", "), [](const FName& N) { return N.ToString(); }));
 	return AugmentChoices;
@@ -290,7 +435,7 @@ bool UBWGameInstance::RerollAugmentChoices()
 	TArray<FBWAugmentData> Rows;
 	GetAugmentRows(Names, Rows);
 	const TArray<FName> Previous = AugmentChoices;
-	AugmentChoices = UBWAugmentRules::PickCandidates(Names, Rows, AugmentPickAct, AugmentPickClass, OwnedAugments, Previous, UBWAugmentRules::ChoicesPerPick, AugmentRandom);
+	AugmentChoices = UBWAugmentRules::PickByKind(Names, Rows, AugmentPickClass, OwnedAugments, Previous, AugmentRandom);
 
 	UE_LOG(LogTemp, Warning, TEXT("[BWAugment] Reroll: %s"), *FString::JoinBy(AugmentChoices, TEXT(", "), [](const FName& N) { return N.ToString(); }));
 	return true;
@@ -300,6 +445,19 @@ bool UBWGameInstance::ChooseAugment(int32 ChoiceIndex)
 {
 	if (!AugmentChoices.IsValidIndex(ChoiceIndex)) return false;
 	OwnedAugments.Add(AugmentChoices[ChoiceIndex]);
+
+	// [추가] 최대 HP를 바꾸는 증강은 고르는 즉시 판 전체에 적용한다
+	FBWAugmentData Chosen;
+	if (GetAugmentData(AugmentChoices[ChoiceIndex], Chosen))
+	{
+		for (const FBWAugmentMod& Mod : Chosen.Mods)
+		{
+			if (Mod.Stat != EBWAugStat::MaxHPFlat && Mod.Stat != EBWAugStat::MaxHPPct) continue;
+			const int32 Delta = Mod.Stat == EBWAugStat::MaxHPFlat ? FMath::RoundToInt(Mod.Value) : FMath::RoundToInt(PlayerMaxHP * Mod.Value);
+			PlayerMaxHP = FMath::Max(1, PlayerMaxHP + Delta);
+			PlayerCurrentHP = FMath::Clamp(PlayerCurrentHP + FMath::Max(0, Delta), 1, PlayerMaxHP);
+		}
+	}
 	UE_LOG(LogTemp, Warning, TEXT("[BWAugment] Chose %s (owned %d)"), *AugmentChoices[ChoiceIndex].ToString(), OwnedAugments.Num());
 	AugmentChoices.Reset();
 	AugmentRerollsLeft = 0;
@@ -344,22 +502,48 @@ static FRewardItem MakeGoldReward(int32 Amount, const FString& Why)
 	return Gold;
 }
 
+int32 UBWGameInstance::GetShopCardPrice(const FBWCardData& Card, bool bOnSale) const
+{
+	const int32 Base = Card.Rarity == EBWCardRarity::Rare ? ShopRareCardPrice : Card.Rarity == EBWCardRarity::Uncommon ? ShopUncommonCardPrice : ShopCardPrice;
+	const float Mult = FMath::Max(0.0f, 1.0f + GetAugmentTotals().Get(EBWAugStat::ShopPct));
+	const int32 Price = FMath::RoundToInt(Base * Mult);
+	return bOnSale ? Price / 2 : Price;
+}
+
+FBWAugmentTotals UBWGameInstance::GetAugmentTotals() const
+{
+	return UBWAugmentRules::Aggregate(GetOwnedAugmentData());
+}
+
 TArray<FName> UBWGameInstance::RollCardChoices(int32 Count)
 {
+	// 내 삶의 방식·공용 카드 중 시작 카드와 저주를 뺀 것. 등급 가중치로 뽑는다 (일반 60 · 고급 30 · 희귀 10)
 	TArray<FName> Pool;
+	TArray<int32> Weights;
 	if (const UDataTable* Table = CardDataTable.LoadSynchronous())
 	{
 		Table->ForeachRow<FBWCardData>(TEXT("Card Reward Pool"), [&](const FName& Key, const FBWCardData& Card)
 		{
-			if (Card.ClassType == SelectedClass || Card.ClassType == EClassType::Common) Pool.Add(Key);
+			if (Card.ClassType != SelectedClass && Card.ClassType != EClassType::Common) return;
+			if (Card.Rarity == EBWCardRarity::Starter) return;
+			const int32 W = Card.Rarity == EBWCardRarity::Rare ? RareCardWeight : Card.Rarity == EBWCardRarity::Uncommon ? UncommonCardWeight : CommonCardWeight;
+			if (W <= 0) return;
+			Pool.Add(Key);
+			Weights.Add(W);
 		});
 	}
 	TArray<FName> Picked;
 	FRandomStream& Stream = GetMapRandom();
 	while (Picked.Num() < Count && Pool.Num() > 0)
 	{
-		Picked.Add(Pool[Stream.RandRange(0, Pool.Num() - 1)]);
-		Pool.Remove(Picked.Last());
+		int32 Total = 0;
+		for (int32 W : Weights) Total += W;
+		int32 Roll = Stream.RandRange(0, Total - 1);
+		int32 Index = 0;
+		while (Index < Weights.Num() - 1 && Roll >= Weights[Index]) Roll -= Weights[Index++];
+		Picked.Add(Pool[Index]);
+		Pool.RemoveAt(Index);
+		Weights.RemoveAt(Index);
 	}
 	return Picked;
 }
@@ -380,6 +564,7 @@ FRewardItem UBWGameInstance::MakeCardReward()
 	}
 	// 과부하 II: 카드 보상 선택지 한 장 줄어듦 (3 → 2)
 	if (GetCurrentOverloadLevel() >= 2) Total = FMath::Max(1, Total - 1);
+	Total += GetAugmentTotals().GetInt(EBWAugStat::CardChoices);
 	Upgraded = FMath::Min(Upgraded, Total);
 
 	Reward.CardChoices = RollCardChoices(Total);
@@ -397,7 +582,7 @@ void UBWGameInstance::GenerateCombatRewards(EMapNodeType EncounterType)
 	int32 Gold = GetMapRandom().RandRange(20, 40);
 	if (EncounterType == EMapNodeType::Elite) Gold *= 2;
 	else if (EncounterType == EMapNodeType::Boss) Gold *= 5;
-	PendingRewards.Add(MakeGoldReward(Gold, TEXT("전투 승리")));
+	PendingRewards.Add(MakeGoldReward(Gold, TEXT("B.W 정산 완료")));
 
 	// 2. 베렌드 방치 보너스: 도착 후 첫 승리에 HP 회복 (1회)
 	if (MapBonus.VictoryHealFraction > 0.0f)
@@ -411,14 +596,14 @@ void UBWGameInstance::GenerateCombatRewards(EMapNodeType EncounterType)
 		MapBonus.VictoryHealFraction = 0.0f;
 	}
 
-	// 3. 타이가 방치 보너스: 다음 전투 보상에 장비 (장비 시스템은 아직 없어 표시만)
+	// 3. 타이가 방치 보너스: 다음 전투 보상에 유물 (유물 시스템은 아직 없어 표시만)
 	if (MapBonus.EquipmentGrade > 0)
 	{
 		FRewardItem Equip;
 		Equip.Type = ERewardType::Equipment;
 		Equip.Amount = MapBonus.EquipmentGrade;
-		Equip.RewardName = MapBonus.EquipmentGrade >= 2 ? TEXT("전설 장비") : TEXT("희귀 이상 장비");
-		Equip.Description = TEXT("타이가 방치 보너스 · 장비 시스템 준비 중이라 아직 효과 없음");
+		Equip.RewardName = MapBonus.EquipmentGrade >= 2 ? TEXT("전설 유물") : TEXT("희귀 이상 유물");
+		Equip.Description = TEXT("타이가 방치 보너스 · 유물 준비 중이라 아직 효과 없음");
 		PendingRewards.Add(Equip);
 		MapBonus.EquipmentGrade = 0;
 	}
@@ -446,8 +631,18 @@ void UBWGameInstance::GenerateTreasureRewards()
 
 void UBWGameInstance::OnBattleWon()
 {
+	bInBattle = false;
 	GenerateCombatRewards(CurrentEncounterType);
-	if (CurrentEncounterType == EMapNodeType::Boss) bActCleared = true;
+	if (CurrentEncounterType == EMapNodeType::Boss)
+	{
+		bActCleared = true;
+		if (CurrentStage < UBWMapRules::NumActs) PendingStatPoints += StatPointsPerGrant;
+	}
+
+	// [추가] 증강: 전투 승리·엘리트 처치 회복
+	const FBWAugmentTotals Totals = GetAugmentTotals();
+	HealPlayer(Totals.GetInt(EBWAugStat::WinHeal));
+	if (CurrentEncounterType == EMapNodeType::Elite) HealPlayer(Totals.GetInt(EBWAugStat::EliteHeal));
 	SaveRun();
 }
 
@@ -519,7 +714,7 @@ bool UBWGameInstance::CanUseCardOnMap(int32 DeckIndex, FString& OutReason) const
 	if (!RunDeck.IsValidIndex(DeckIndex) || !GetCardData(RunDeck[DeckIndex].Row, RunDeck[DeckIndex].bUpgraded, Card)) { OutReason = TEXT("카드 없음"); return false; }
 	if (Card.CardKind != ECardKind::Effect) { OutReason = TEXT("공격카드는 전투에서만"); return false; }
 	if (Card.EffectHeal <= 0) { OutReason = TEXT("전투에서만 의미 있는 효과"); return false; }
-	if (MapUsedCards.Contains(RunDeck[DeckIndex].Row)) { OutReason = TEXT("이번 막에 이미 씀"); return false; }
+	if (MapUsedCards.Contains(RunDeck[DeckIndex].Row)) { OutReason = TEXT("이번 층에 이미 씀"); return false; }
 	if (PlayerCurrentHP >= PlayerMaxHP) { OutReason = TEXT("HP가 가득 참"); return false; }
 	OutReason.Reset();
 	return true;
@@ -539,16 +734,24 @@ bool UBWGameInstance::UseCardOnMap(int32 DeckIndex)
 
 int32 UBWGameInstance::GetRestHealAmount() const
 {
-	return FMath::Max(1, FMath::RoundToInt(PlayerMaxHP * RestHealFraction));
+	const float Mult = SelectedClass == EClassType::HP ? HPClassRestMultiplier : 1.0f; // 철혈의 분쇄자 '털어내기'
+	const FBWAugmentTotals Totals = GetAugmentTotals();
+	if (Totals.Has(EBWAugStat::NoRestHeal)) return 0;
+	return FMath::Max(1, FMath::RoundToInt(PlayerMaxHP * RestHealFraction * Mult * (1.0f + Totals.Get(EBWAugStat::RestPct))));
 }
 
 void UBWGameInstance::RestHeal()
 {
 	HealPlayer(GetRestHealAmount());
+	// [추가] 고행자: 휴식할 때마다 최대 HP +
+	const int32 Grow = GetAugmentTotals().GetInt(EBWAugStat::RestMaxHP);
+	PlayerMaxHP += Grow;
+	PlayerCurrentHP += Grow;
 }
 
 void UBWGameInstance::HealPlayer(int32 Amount)
 {
+	if (GetAugmentTotals().Has(EBWAugStat::NoHeal)) return;
 	PlayerCurrentHP = FMath::Clamp(PlayerCurrentHP + FMath::Max(0, Amount), 1, PlayerMaxHP);
 }
 
@@ -760,7 +963,7 @@ void UBWGameInstance::ClaimNeglectBonus(EDimensionType Dim, int32 Neglect, FBWAr
 		Report.CardRemovals = Bonus.CardRemovals;
 		MapBonus.EquipmentGrade = FMath::Max(MapBonus.EquipmentGrade, Bonus.EquipmentGrade);
 		Report.BonusLines.Add(FString::Printf(TEXT("지금 카드 %d장 삭제"), Bonus.CardRemovals));
-		Report.BonusLines.Add(Bonus.EquipmentGrade >= 2 ? TEXT("다음 전투 보상에 전설 장비 확정") : TEXT("다음 전투 보상에 희귀 이상 장비 확정"));
+		Report.BonusLines.Add(Bonus.EquipmentGrade >= 2 ? TEXT("다음 전투 보상에 전설 유물 확정") : TEXT("다음 전투 보상에 희귀 이상 유물 확정"));
 		break;
 	default:
 		break;
@@ -836,10 +1039,42 @@ float UBWGameInstance::ConsumeNextBattleDamageBonus()
 	return Bonus;
 }
 
+int32 UBWGameInstance::GetMainGrowthStat() const
+{
+	switch (SelectedClass)
+	{
+	case EClassType::TEC: return 1;
+	case EClassType::INT: return 2;
+	case EClassType::FTH: return 3;
+	case EClassType::HP:  return 4;
+	default:              return 0;
+	}
+}
+
+void UBWGameInstance::SpendStatPoint(int32 Stat)
+{
+	if (PendingStatPoints <= 0) return;
+	--PendingStatPoints;
+	switch (Stat)
+	{
+	case 0: ++PlayerPHA; break;
+	case 1: ++PlayerTEC; break;
+	case 2: ++PlayerINT; break;
+	case 3: ++PlayerFTH; break;
+	case 4: PlayerMaxHP += HPPerStatPoint; PlayerCurrentHP += HPPerStatPoint; break;
+	default: ++PlayerDefensePoints; break;
+	}
+}
+
 bool UBWGameInstance::AdvanceToNextAct()
 {
 	if (CurrentStage >= UBWMapRules::NumActs) return false;
 	++CurrentStage;
+
+	// 배분하지 않은 포인트(측정 봇 등)는 주 능력치로
+	while (PendingStatPoints > 0) SpendStatPoint(GetMainGrowthStat());
+	// 영혼의 탄환은 마지막 막(3막)에 들어서는 순간 영혼을 잃는다
+	if (CurrentStage >= UBWMapRules::NumActs) SoulBullets = 0;
 	GenerateWorldMap();
 	SaveRun();
 	return true;
